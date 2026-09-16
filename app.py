@@ -29,6 +29,79 @@ def czy_poprawny_telefon(telefon):
     return bool(re.fullmatch(r"(\+48)?\d{9}", oczyszczony))
 
 
+def zapamietaj_komunikat(typ, tresc):
+    """
+    Dodaje komunikat (np. 'Lekcja dodana!') do kolejki w session_state, żeby
+    przetrwał st.rerun(). Bez tego st.success() wywołane tuż przed st.rerun()
+    znika z ekranu w ułamku sekundy, bo strona natychmiast się przeładowuje.
+    Może być więcej niż jeden komunikat naraz (np. sukces + ostrzeżenie o mailu).
+    """
+    st.session_state.setdefault("zapamietane_komunikaty", []).append((typ, tresc))
+
+
+def pokaz_zapamietany_komunikat():
+    """Wyświetla komunikaty zapisane przed ostatnim st.rerun() (jeśli są) i czyści je."""
+    for typ, tresc in st.session_state.pop("zapamietane_komunikaty", []):
+        if typ == "success":
+            st.success(tresc)
+        elif typ == "warning":
+            st.warning(tresc)
+        elif typ == "error":
+            st.error(tresc)
+
+
+ETYKIETY_STATUSOW_LEKCJI = {
+    "zaplanowana": "🕒 Zaplanowana",
+    "odbyta": "✅ Odbyta",
+    "odwolana": "❌ Odwołana",
+}
+
+
+def pokaz_kontrolki_lekcji(lekcja, korepetytor_id, klucz_prefix):
+    """
+    Wspólny widżet do ręcznej zmiany statusu lekcji i jej trwałego usunięcia.
+    Używany w Dashboardzie, Kalendarzu i Historii ucznia, żeby zachowanie
+    i wygląd były wszędzie takie same.
+    """
+    opcje_statusow = list(ETYKIETY_STATUSOW_LEKCJI.keys())
+    indeks_obecnego = opcje_statusow.index(lekcja["status"])
+
+    col_status, col_zastosuj = st.columns([2, 1])
+    with col_status:
+        wybrany_status = st.selectbox(
+            "Status",
+            opcje_statusow,
+            index=indeks_obecnego,
+            format_func=lambda s: ETYKIETY_STATUSOW_LEKCJI[s],
+            key=f"{klucz_prefix}_status_{lekcja['id']}",
+            label_visibility="collapsed",
+        )
+    with col_zastosuj:
+        if st.button("Zastosuj", key=f"{klucz_prefix}_zastosuj_{lekcja['id']}"):
+            if wybrany_status != lekcja["status"]:
+                db.change_lesson_status_manual(lekcja["id"], korepetytor_id, wybrany_status)
+                zapamietaj_komunikat("success", "Status lekcji zaktualizowany.")
+                st.rerun()
+
+    if st.session_state.get(f"{klucz_prefix}_potwierdz_usun_{lekcja['id']}", False):
+        st.warning("Usunięcie jest nieodwracalne - lekcja zniknie całkowicie, bez śladu w historii.")
+        col_tak, col_nie = st.columns(2)
+        with col_tak:
+            if st.button("Tak, usuń na stałe", key=f"{klucz_prefix}_usun_tak_{lekcja['id']}"):
+                db.delete_lesson(lekcja["id"], korepetytor_id)
+                st.session_state[f"{klucz_prefix}_potwierdz_usun_{lekcja['id']}"] = False
+                zapamietaj_komunikat("success", "Lekcja usunięta na stałe.")
+                st.rerun()
+        with col_nie:
+            if st.button("Anuluj", key=f"{klucz_prefix}_usun_nie_{lekcja['id']}"):
+                st.session_state[f"{klucz_prefix}_potwierdz_usun_{lekcja['id']}"] = False
+                st.rerun()
+    else:
+        if st.button("🗑️ Usuń na stałe", key=f"{klucz_prefix}_usun_{lekcja['id']}"):
+            st.session_state[f"{klucz_prefix}_potwierdz_usun_{lekcja['id']}"] = True
+            st.rerun()
+
+
 st.set_page_config(page_title="Korepetytor +", page_icon="📚", layout="wide")
 
 # Własny CSS - ciemny, nowoczesny wygląd paska bocznego z zaokrąglonymi
@@ -344,6 +417,7 @@ menu = menu.split(" ", 1)[1]
 # --- WIDOK: PODSUMOWANIE (DASHBOARD) ---
 if menu == "Podsumowanie":
     st.header("📊 Podsumowanie")
+    pokaz_zapamietany_komunikat()
 
     uczniowie = db.get_students(korepetytor_id)
     dzis = date.today()
@@ -376,15 +450,8 @@ if menu == "Podsumowanie":
         else:
             for lekcja in sorted(lekcje_dzis, key=lambda l: l["godzina"]):
                 st.write(f"🕒 {lekcja['godzina']} — {lekcja['imie']} {lekcja['nazwisko'] or ''}")
-                col_odbyta, col_odwolaj = st.columns(2)
-                with col_odbyta:
-                    if st.button("Odbyta", key=f"dash_odbyta_dzis_{lekcja['id']}"):
-                        db.mark_lesson_status(lekcja["id"], korepetytor_id, "odbyta")
-                        st.rerun()
-                with col_odwolaj:
-                    if st.button("Odwołaj", key=f"dash_odwolaj_dzis_{lekcja['id']}"):
-                        db.cancel_lesson(lekcja["id"], korepetytor_id)
-                        st.rerun()
+                pokaz_kontrolki_lekcji(lekcja, korepetytor_id, "dash_dzis")
+                st.divider()
 
     with col_jutro:
         st.subheader("Jutro")
@@ -393,15 +460,8 @@ if menu == "Podsumowanie":
         else:
             for lekcja in sorted(lekcje_jutro, key=lambda l: l["godzina"]):
                 st.write(f"🕒 {lekcja['godzina']} — {lekcja['imie']} {lekcja['nazwisko'] or ''}")
-                col_odbyta, col_odwolaj = st.columns(2)
-                with col_odbyta:
-                    if st.button("Odbyta", key=f"dash_odbyta_jutro_{lekcja['id']}"):
-                        db.mark_lesson_status(lekcja["id"], korepetytor_id, "odbyta")
-                        st.rerun()
-                with col_odwolaj:
-                    if st.button("Odwołaj", key=f"dash_odwolaj_jutro_{lekcja['id']}"):
-                        db.cancel_lesson(lekcja["id"], korepetytor_id)
-                        st.rerun()
+                pokaz_kontrolki_lekcji(lekcja, korepetytor_id, "dash_jutro")
+                st.divider()
 
     st.divider()
 
@@ -468,6 +528,7 @@ if menu == "Podsumowanie":
 # --- WIDOK: KALENDARZ ---
 elif menu == "Kalendarz":
     st.header("Kalendarz lekcji")
+    pokaz_zapamietany_komunikat()
 
     lekcje = db.get_all_lessons(korepetytor_id)
 
@@ -524,31 +585,21 @@ elif menu == "Kalendarz":
         if wybrana_lekcja:
             st.divider()
             st.subheader("Wybrana lekcja")
-            etykiety_statusow = {
-                "zaplanowana": "🕒 Zaplanowana",
-                "odbyta": "✅ Odbyta",
-                "odwolana": "❌ Odwołana"
-            }
             st.write(f"**{wybrana_lekcja['imie']} {wybrana_lekcja['nazwisko'] or ''}**")
             st.caption(
                 f"{wybrana_lekcja['data']} o {wybrana_lekcja['godzina']} "
                 f"({wybrana_lekcja['czas_trwania']}h) — "
-                f"{etykiety_statusow.get(wybrana_lekcja['status'], wybrana_lekcja['status'])}"
+                f"{ETYKIETY_STATUSOW_LEKCJI.get(wybrana_lekcja['status'], wybrana_lekcja['status'])}"
             )
             if wybrana_lekcja["notatka"]:
                 st.caption(f"Notatka: {wybrana_lekcja['notatka']}")
 
-            if wybrana_lekcja["status"] == "zaplanowana":
-                if st.button("Odwołaj tę lekcję", key=f"kalendarz_odwolaj_{kliknieta_lekcja_id}"):
-                    db.cancel_lesson(kliknieta_lekcja_id, korepetytor_id)
-                    st.success("Lekcja odwołana, godziny wróciły do pakietu ucznia.")
-                    st.rerun()
-            else:
-                st.caption("Tę lekcję można odwołać tylko, gdy ma status „Zaplanowana”.")
+            pokaz_kontrolki_lekcji(wybrana_lekcja, korepetytor_id, "kalendarz")
 
 # --- WIDOK: DODAJ LEKCJĘ ---
 elif menu == "Dodaj lekcję":
     st.header("Dodaj nową lekcję")
+    pokaz_zapamietany_komunikat()
     uczniowie = db.get_students(korepetytor_id)
 
     if not uczniowie:
@@ -596,7 +647,7 @@ elif menu == "Dodaj lekcję":
                         czas_trwania=czas_trwania,
                         notatka=notatka
                     )
-                st.success(f"Dodano {liczba_tygodni} lekcji cyklicznych! Godziny odjęte z pakietu ucznia.")
+                zapamietaj_komunikat("success", f"Dodano {liczba_tygodni} lekcji cyklicznych! Godziny odjęte z pakietu ucznia.")
 
                 if wyslij_powiadomienie:
                     tresc = poczta.szablon_powiadomienia_o_serii(
@@ -607,7 +658,7 @@ elif menu == "Dodaj lekcję":
                         dane_wybranego["email"], "Nowe lekcje zaplanowane - Korepetytor +", tresc
                     )
                     if not udalo_sie:
-                        st.warning(f"Lekcje dodane, ale nie udało się wysłać powiadomienia e-mail: {blad}")
+                        zapamietaj_komunikat("warning", f"Lekcje dodane, ale nie udało się wysłać powiadomienia e-mail: {blad}")
             else:
                 db.add_lesson(
                     uczen_id=uczen_id,
@@ -617,7 +668,7 @@ elif menu == "Dodaj lekcję":
                     czas_trwania=czas_trwania,
                     notatka=notatka
                 )
-                st.success("Lekcja dodana! Godziny odjęte z pakietu ucznia.")
+                zapamietaj_komunikat("success", "Lekcja dodana! Godziny odjęte z pakietu ucznia.")
 
                 if wyslij_powiadomienie:
                     tresc = poczta.szablon_powiadomienia_o_lekcji(
@@ -628,13 +679,14 @@ elif menu == "Dodaj lekcję":
                         dane_wybranego["email"], "Przypomnienie o lekcji - Korepetytor +", tresc
                     )
                     if not udalo_sie:
-                        st.warning(f"Lekcja dodana, ale nie udało się wysłać powiadomienia e-mail: {blad}")
+                        zapamietaj_komunikat("warning", f"Lekcja dodana, ale nie udało się wysłać powiadomienia e-mail: {blad}")
 
             st.rerun()
 
 # --- WIDOK: LISTA UCZNIÓW ---
 elif menu == "Lista uczniów":
     st.header("Lista uczniów")
+    pokaz_zapamietany_komunikat()
 
     # Kafelek "Dodaj nowego ucznia" - rozwijany formularz na górze strony
     if st.button("➕ Dodaj nowego ucznia"):
@@ -729,17 +781,13 @@ elif menu == "Lista uczniów":
                 if not historia:
                     st.caption("Brak lekcji w historii.")
                 else:
-                    etykiety_statusow = {
-                        "zaplanowana": "🕒 Zaplanowana",
-                        "odbyta": "✅ Odbyta",
-                        "odwolana": "❌ Odwołana"
-                    }
                     for lekcja in historia:
-                        etykieta = etykiety_statusow.get(lekcja["status"], lekcja["status"])
-                        linia = f"{lekcja['data']} {lekcja['godzina']} ({lekcja['czas_trwania']}h) — {etykieta}"
+                        linia = f"{lekcja['data']} {lekcja['godzina']} ({lekcja['czas_trwania']}h)"
                         if lekcja["notatka"]:
                             linia += f" — {lekcja['notatka']}"
-                        st.caption(linia)
+                        st.write(linia)
+                        pokaz_kontrolki_lekcji(lekcja, korepetytor_id, "historia")
+                        st.divider()
 
             if st.session_state.get(f"pokaz_edycje_{u['id']}", False):
                 st.markdown("**Edycja danych ucznia:**")

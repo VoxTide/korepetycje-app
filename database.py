@@ -569,6 +569,66 @@ def cancel_lesson(lekcja_id, korepetytor_id):
     adjust_student_hours(lekcja["uczen_id"], korepetytor_id, lekcja["czas_trwania"])
 
 
+def _status_rezerwuje_godziny(status):
+    """
+    'zaplanowana' i 'odbyta' oznaczają, że godziny są odjęte z pakietu ucznia.
+    'odwolana' oznacza, że godziny zostały zwrócone. Używane do wyliczenia,
+    czy zmiana statusu wymaga odjęcia albo oddania godzin.
+    """
+    return status in ("zaplanowana", "odbyta")
+
+
+def change_lesson_status_manual(lekcja_id, korepetytor_id, nowy_status):
+    """
+    Ręcznie ustawia dowolny status lekcji (zaplanowana / odbyta / odwolana),
+    automatycznie korygując saldo godzin ucznia, żeby zawsze było spójne
+    niezależnie od tego, z jakiego stanu w jaki przechodzimy - np. cofnięcie
+    z „odwołana” z powrotem na „zaplanowana” ponownie odejmuje godziny.
+    """
+    lekcja = _get_lesson_with_owner_check(lekcja_id, korepetytor_id)
+    if lekcja is None:
+        raise ValueError("Nie znaleziono lekcji lub brak dostępu.")
+
+    stary_status = lekcja["status"]
+    if stary_status == nowy_status:
+        return  # nic się nie zmienia
+
+    stary_rezerwowal = _status_rezerwuje_godziny(stary_status)
+    nowy_rezerwuje = _status_rezerwuje_godziny(nowy_status)
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE lekcje SET status = ? WHERE id = ?", (nowy_status, lekcja_id))
+    conn.commit()
+    conn.close()
+
+    if stary_rezerwowal and not nowy_rezerwuje:
+        adjust_student_hours(lekcja["uczen_id"], korepetytor_id, lekcja["czas_trwania"])
+    elif not stary_rezerwowal and nowy_rezerwuje:
+        adjust_student_hours(lekcja["uczen_id"], korepetytor_id, -lekcja["czas_trwania"])
+
+
+def delete_lesson(lekcja_id, korepetytor_id):
+    """
+    Usuwa lekcję na stałe (bez śladu w historii) - tylko jeśli należy do
+    korepetytora. Jeśli lekcja miała zarezerwowane godziny (zaplanowana albo
+    odbyta), zwraca je do pakietu ucznia przed usunięciem, żeby usunięcie nie
+    zostawiło ucznia z zaniżonym saldem za coś, czego już nie widać w systemie.
+    """
+    lekcja = _get_lesson_with_owner_check(lekcja_id, korepetytor_id)
+    if lekcja is None:
+        raise ValueError("Nie znaleziono lekcji lub brak dostępu.")
+
+    if _status_rezerwuje_godziny(lekcja["status"]):
+        adjust_student_hours(lekcja["uczen_id"], korepetytor_id, lekcja["czas_trwania"])
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM lekcje WHERE id = ?", (lekcja_id,))
+    conn.commit()
+    conn.close()
+
+
 # --- KONTA UCZNIÓW (osobny system logowania, niezależny od kont korepetytorów) ---
 
 def get_invite_code(uczen_id, korepetytor_id):
