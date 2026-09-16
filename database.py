@@ -25,6 +25,8 @@ def get_connection():
 
 def init_db():
     """Tworzy tabele, jeśli jeszcze nie istnieją. Wywołaj raz na start aplikacji."""
+    _napraw_przestarzala_tabele_uczniow()
+
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -69,6 +71,35 @@ def init_db():
     conn.commit()
     conn.close()
     _migruj_baze()
+
+
+def _napraw_przestarzala_tabele_uczniow():
+    """
+    Sprawdza, czy tabela 'uczniowie' powstała PRZED wprowadzeniem kont
+    użytkowników (czyli nie ma kolumny korepetytor_id). Jeśli tak, usuwa
+    ją razem z tabelą 'lekcje' (która i tak się do niej odwołuje), żeby
+    mogły zostać utworzone od nowa z poprawną strukturą.
+
+    Uwaga: to nieodwracalnie kasuje uczniów/lekcje zapisane w TEJ starej
+    strukturze - ale skoro nie mają nawet przypisanego konta korepetytora,
+    i tak nie dałoby się ich sensownie przypisać do nikogo.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='uczniowie'")
+    tabela_istnieje = cursor.fetchone() is not None
+
+    if tabela_istnieje:
+        cursor.execute("PRAGMA table_info(uczniowie)")
+        kolumny = [wiersz["name"] for wiersz in cursor.fetchall()]
+
+        if "korepetytor_id" not in kolumny:
+            cursor.execute("DROP TABLE IF EXISTS lekcje")
+            cursor.execute("DROP TABLE IF EXISTS uczniowie")
+            conn.commit()
+
+    conn.close()
 
 
 def _migruj_baze():
