@@ -596,12 +596,15 @@ elif menu == "Kalendarz":
 
     st.caption("🔵 Zaplanowana &nbsp;&nbsp; 🟢 Odbyta &nbsp;&nbsp; 🔴 Odwołana", unsafe_allow_html=True)
 
-    # Obsługa kliknięcia w wydarzenie - zapisujemy wybór w session_state, bo
-    # komponent kalendarza zgłasza kliknięcie tylko przez jeden cykl odświeżenia
-    # (np. samo dotknięcie rozwijanej listy statusu resetowałoby wybór, gdybyśmy
-    # opierali się wyłącznie na bieżącym zwrocie z kalendarza)
+    # Obsługa kliknięcia w wydarzenie - komponent kalendarza "pamięta" ostatnie
+    # kliknięcie na stałe (zwraca je przy każdym odświeżeniu strony), więc żeby
+    # przycisk "Zamknij" mógł faktycznie zamknąć wybór, reagujemy tylko na
+    # NOWE kliknięcie (inne niż ostatnio już obsłużone), a nie na każdy zwrot
     if stan_kalendarza and stan_kalendarza.get("eventClick"):
-        st.session_state["kalendarz_wybrana_lekcja_id"] = int(stan_kalendarza["eventClick"]["event"]["id"])
+        kliknieta_teraz_id = int(stan_kalendarza["eventClick"]["event"]["id"])
+        if kliknieta_teraz_id != st.session_state.get("kalendarz_ostatnio_obsluzony_klik"):
+            st.session_state["kalendarz_wybrana_lekcja_id"] = kliknieta_teraz_id
+            st.session_state["kalendarz_ostatnio_obsluzony_klik"] = kliknieta_teraz_id
 
     if "kalendarz_wybrana_lekcja_id" in st.session_state:
         lekcje_wg_id = {l["id"]: l for l in lekcje}
