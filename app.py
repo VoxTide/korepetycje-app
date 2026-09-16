@@ -89,7 +89,15 @@ st.markdown("""
 def pokaz_ekran_logowania():
     st.title("📚 Korepetytor +")
 
-    tab_logowanie, tab_rejestracja = st.tabs(["Zaloguj się", "Załóż konto"])
+    PYTANIA_BEZPIECZENSTWA = [
+        "Jak nazywał się Twój pierwszy zwierzak?",
+        "W jakim mieście się urodziłeś/aś?",
+        "Jak miała na imię Twoja pierwsza nauczycielka?",
+        "Jak nazywała się Twoja podstawowa szkoła?",
+        "Jakie jest nazwisko panieńskie Twojej mamy?",
+    ]
+
+    tab_logowanie, tab_rejestracja, tab_reset = st.tabs(["Zaloguj się", "Załóż konto", "Zapomniałem hasła"])
 
     with tab_logowanie:
         login = st.text_input("Login", key="login_logowanie")
@@ -111,20 +119,69 @@ def pokaz_ekran_logowania():
         nowy_login = st.text_input("Wybierz login", key="login_rejestracja")
         nowe_haslo = st.text_input("Wybierz hasło", type="password", key="haslo_rejestracja")
         powtorz_haslo = st.text_input("Powtórz hasło", type="password", key="haslo_rejestracja_2")
+        wybrane_pytanie = st.selectbox("Pytanie bezpieczeństwa (do resetu hasła)", PYTANIA_BEZPIECZENSTWA)
+        odpowiedz = st.text_input("Twoja odpowiedź", key="odpowiedz_rejestracja")
 
         if st.button("Załóż konto"):
-            if not nowy_login or not nowe_haslo:
-                st.error("Wypełnij wszystkie pola.")
+            if not nowy_login or not nowe_haslo or not odpowiedz.strip():
+                st.error("Wypełnij wszystkie pola, łącznie z odpowiedzią na pytanie bezpieczeństwa.")
             elif nowe_haslo != powtorz_haslo:
                 st.error("Hasła nie są identyczne.")
             elif len(nowe_haslo) < 4:
                 st.error("Hasło musi mieć co najmniej 4 znaki.")
             else:
                 try:
-                    db.create_user(nowy_login, nowe_haslo)
+                    db.create_user(nowy_login, nowe_haslo, wybrane_pytanie, odpowiedz)
                     st.success("Konto utworzone! Możesz się teraz zalogować w zakładce obok.")
                 except ValueError as e:
                     st.error(str(e))
+
+    with tab_reset:
+        st.caption("Podaj swój login, odpowiedz na pytanie bezpieczeństwa, a następnie ustaw nowe hasło.")
+
+        # Etap 1: podanie loginu i pobranie pytania bezpieczeństwa
+        login_reset = st.text_input("Login", key="login_reset")
+
+        if st.button("Dalej", key="reset_krok1"):
+            pytanie = db.get_security_question(login_reset)
+            if pytanie is None:
+                st.error("Nie znaleziono konta o takim loginie.")
+            elif not pytanie:
+                st.error("To konto nie ma ustawionego pytania bezpieczeństwa - reset nie jest możliwy.")
+            else:
+                st.session_state["reset_login"] = login_reset
+                st.session_state["reset_pytanie"] = pytanie
+                st.session_state["reset_zweryfikowano"] = False
+
+        # Etap 2: odpowiedź na pytanie bezpieczeństwa
+        if st.session_state.get("reset_login") and not st.session_state.get("reset_zweryfikowano"):
+            st.write(f"**{st.session_state['reset_pytanie']}**")
+            odpowiedz_reset = st.text_input("Twoja odpowiedź", key="odpowiedz_reset")
+
+            if st.button("Sprawdź odpowiedź", key="reset_krok2"):
+                if db.verify_security_answer(st.session_state["reset_login"], odpowiedz_reset):
+                    st.session_state["reset_zweryfikowano"] = True
+                    st.rerun()
+                else:
+                    st.error("Niepoprawna odpowiedź.")
+
+        # Etap 3: ustawienie nowego hasła
+        if st.session_state.get("reset_zweryfikowano"):
+            st.success("Odpowiedź poprawna. Ustaw nowe hasło.")
+            nowe_haslo_reset = st.text_input("Nowe hasło", type="password", key="nowe_haslo_reset")
+            powtorz_haslo_reset = st.text_input("Powtórz nowe hasło", type="password", key="powtorz_haslo_reset")
+
+            if st.button("Zresetuj hasło", key="reset_krok3"):
+                if nowe_haslo_reset != powtorz_haslo_reset:
+                    st.error("Hasła nie są identyczne.")
+                elif len(nowe_haslo_reset) < 4:
+                    st.error("Hasło musi mieć co najmniej 4 znaki.")
+                else:
+                    db.reset_password(st.session_state["reset_login"], nowe_haslo_reset)
+                    st.success("Hasło zostało zmienione! Możesz się teraz zalogować w zakładce obok.")
+                    del st.session_state["reset_login"]
+                    del st.session_state["reset_pytanie"]
+                    del st.session_state["reset_zweryfikowano"]
 
 
 # --- SPRAWDZENIE, CZY UŻYTKOWNIK JEST ZALOGOWANY ---

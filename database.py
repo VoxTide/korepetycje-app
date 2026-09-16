@@ -36,6 +36,9 @@ def init_db():
             login TEXT NOT NULL UNIQUE,
             hash_hasla TEXT NOT NULL,
             sol TEXT NOT NULL,
+            pytanie_bezpieczenstwa TEXT,
+            hash_odpowiedzi TEXT,
+            sol_odpowiedzi TEXT,
             utworzono TEXT NOT NULL
         )
     """)
@@ -116,6 +119,18 @@ def _migruj_baze():
         conn.commit()
     except sqlite3.OperationalError:
         pass  # kolumna już istnieje - nic do zrobienia
+
+    for kolumna, typ in [
+        ("pytanie_bezpieczenstwa", "TEXT"),
+        ("hash_odpowiedzi", "TEXT"),
+        ("sol_odpowiedzi", "TEXT"),
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE uzytkownicy ADD COLUMN {kolumna} {typ}")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # kolumna już istnieje - nic do zrobienia
+
     conn.close()
 
 
@@ -131,9 +146,10 @@ def _hash_password(password, sol=None):
 
 # --- UŻYTKOWNICY (konta korepetytorów) ---
 
-def create_user(login, password):
+def create_user(login, password, pytanie_bezpieczenstwa, odpowiedz_bezpieczenstwa):
     """
-    Tworzy nowe konto. Zwraca id nowego użytkownika.
+    Tworzy nowe konto wraz z pytaniem i odpowiedzią bezpieczeństwa (do resetu hasła).
+    Zwraca id nowego użytkownika.
     Rzuca ValueError, jeśli login jest już zajęty.
     """
     conn = get_connection()
@@ -145,10 +161,16 @@ def create_user(login, password):
         raise ValueError("Ten login jest już zajęty.")
 
     hash_hasla, sol = _hash_password(password)
+    # Odpowiedź na pytanie bezpieczeństwa haszujemy tak samo jak hasło,
+    # a przed haszowaniem normalizujemy (mała litera, bez spacji na końcach),
+    # żeby drobne różnice w pisowni (wielkość liter) nie blokowały resetu
+    hash_odp, sol_odp = _hash_password(odpowiedz_bezpieczenstwa.strip().lower())
+
     cursor.execute(
-        """INSERT INTO uzytkownicy (login, hash_hasla, sol, utworzono)
-           VALUES (?, ?, ?, ?)""",
-        (login, hash_hasla, sol, datetime.now().isoformat())
+        """INSERT INTO uzytkownicy
+           (login, hash_hasla, sol, pytanie_bezpieczenstwa, hash_odpowiedzi, sol_odpowiedzi, utworzono)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (login, hash_hasla, sol, pytanie_bezpieczenstwa, hash_odp, sol_odp, datetime.now().isoformat())
     )
     conn.commit()
     new_id = cursor.lastrowid
@@ -174,6 +196,44 @@ def verify_user(login, password):
     if proby_hash == row["hash_hasla"]:
         return row["id"]
     return None
+
+
+def get_security_question(login):
+    """Zwraca pytanie bezpieczeństwa dla danego loginu, albo None jeśli konto nie istnieje."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT pytanie_bezpieczenstwa FROM uzytkownicy WHERE login = ?", (login,))
+    row = cursor.fetchone()
+    conn.close()
+    return row["pytanie_bezpieczenstwa"] if row else None
+
+
+def verify_security_answer(login, odpowiedz):
+    """Sprawdza odpowiedź na pytanie bezpieczeństwa. Zwraca True/False."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT hash_odpowiedzi, sol_odpowiedzi FROM uzytkownicy WHERE login = ?", (login,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None or row["hash_odpowiedzi"] is None:
+        return False
+
+    proby_hash, _ = _hash_password(odpowiedz.strip().lower(), row["sol_odpowiedzi"])
+    return proby_hash == row["hash_odpowiedzi"]
+
+
+def reset_password(login, nowe_haslo):
+    """Ustawia nowe hasło dla użytkownika (po pozytywnej weryfikacji odpowiedzi)."""
+    hash_hasla, sol = _hash_password(nowe_haslo)
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE uzytkownicy SET hash_hasla = ?, sol = ? WHERE login = ?",
+        (hash_hasla, sol, login)
+    )
+    conn.commit()
+    conn.close()
 
 
 def delete_user(korepetytor_id):
