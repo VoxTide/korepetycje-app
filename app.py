@@ -576,15 +576,30 @@ elif menu == "Kalendarz":
 
     st.caption("🔵 Zaplanowana &nbsp;&nbsp; 🟢 Odbyta &nbsp;&nbsp; 🔴 Odwołana", unsafe_allow_html=True)
 
-    # Obsługa kliknięcia w wydarzenie - pokazuje szczegóły i opcję odwołania
+    # Obsługa kliknięcia w wydarzenie - zapisujemy wybór w session_state, bo
+    # komponent kalendarza zgłasza kliknięcie tylko przez jeden cykl odświeżenia
+    # (np. samo dotknięcie rozwijanej listy statusu resetowałoby wybór, gdybyśmy
+    # opierali się wyłącznie na bieżącym zwrocie z kalendarza)
     if stan_kalendarza and stan_kalendarza.get("eventClick"):
-        kliknieta_lekcja_id = int(stan_kalendarza["eventClick"]["event"]["id"])
-        lekcje_wg_id = {l["id"]: l for l in lekcje}
-        wybrana_lekcja = lekcje_wg_id.get(kliknieta_lekcja_id)
+        st.session_state["kalendarz_wybrana_lekcja_id"] = int(stan_kalendarza["eventClick"]["event"]["id"])
 
-        if wybrana_lekcja:
+    if "kalendarz_wybrana_lekcja_id" in st.session_state:
+        lekcje_wg_id = {l["id"]: l for l in lekcje}
+        wybrana_lekcja = lekcje_wg_id.get(st.session_state["kalendarz_wybrana_lekcja_id"])
+
+        if wybrana_lekcja is None:
+            # Lekcja została usunięta na stałe - czyścimy zapamiętany wybór
+            del st.session_state["kalendarz_wybrana_lekcja_id"]
+        else:
             st.divider()
-            st.subheader("Wybrana lekcja")
+            col_naglowek, col_zamknij = st.columns([5, 1])
+            with col_naglowek:
+                st.subheader("Wybrana lekcja")
+            with col_zamknij:
+                if st.button("✖ Zamknij", key="kalendarz_zamknij_wybor"):
+                    del st.session_state["kalendarz_wybrana_lekcja_id"]
+                    st.rerun()
+
             st.write(f"**{wybrana_lekcja['imie']} {wybrana_lekcja['nazwisko'] or ''}**")
             st.caption(
                 f"{wybrana_lekcja['data']} o {wybrana_lekcja['godzina']} "
