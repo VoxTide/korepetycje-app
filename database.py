@@ -46,6 +46,7 @@ def init_db():
             nazwisko TEXT,
             telefon TEXT,
             pakiet_godzin REAL NOT NULL DEFAULT 0,
+            notatki TEXT,
             utworzono TEXT NOT NULL,
             FOREIGN KEY (korepetytor_id) REFERENCES uzytkownicy (id)
         )
@@ -66,6 +67,24 @@ def init_db():
     """)
 
     conn.commit()
+    conn.close()
+    _migruj_baze()
+
+
+def _migruj_baze():
+    """
+    Dodaje kolumny do istniejących tabel, jeśli powstały przed wprowadzeniem
+    tej funkcji (np. przy aktualizacji aplikacji na już działającej bazie).
+    SQLite nie ma "ADD COLUMN IF NOT EXISTS", więc łapiemy błąd, jeśli kolumna
+    już istnieje - to nie jest wtedy prawdziwy problem.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("ALTER TABLE uczniowie ADD COLUMN notatki TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # kolumna już istnieje - nic do zrobienia
     conn.close()
 
 
@@ -152,14 +171,14 @@ def delete_user(korepetytor_id):
 
 # --- UCZNIOWIE (zawsze filtrowane po korepetytor_id) ---
 
-def add_student(korepetytor_id, imie, nazwisko, telefon, pakiet_godzin):
+def add_student(korepetytor_id, imie, nazwisko, telefon, pakiet_godzin, notatki=""):
     """Dodaje nowego ucznia przypisanego do konkretnego korepetytora."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        """INSERT INTO uczniowie (korepetytor_id, imie, nazwisko, telefon, pakiet_godzin, utworzono)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (korepetytor_id, imie, nazwisko, telefon, pakiet_godzin, datetime.now().isoformat())
+        """INSERT INTO uczniowie (korepetytor_id, imie, nazwisko, telefon, pakiet_godzin, notatki, utworzono)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (korepetytor_id, imie, nazwisko, telefon, pakiet_godzin, notatki, datetime.now().isoformat())
     )
     conn.commit()
     new_id = cursor.lastrowid
@@ -197,15 +216,15 @@ def get_student_by_id(uczen_id, korepetytor_id):
     return dict(row) if row else None
 
 
-def update_student(uczen_id, korepetytor_id, imie, nazwisko, telefon, pakiet_godzin):
+def update_student(uczen_id, korepetytor_id, imie, nazwisko, telefon, pakiet_godzin, notatki=""):
     """Aktualizuje dane ucznia — tylko jeśli należy do tego korepetytora."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
         """UPDATE uczniowie
-           SET imie = ?, nazwisko = ?, telefon = ?, pakiet_godzin = ?
+           SET imie = ?, nazwisko = ?, telefon = ?, pakiet_godzin = ?, notatki = ?
            WHERE id = ? AND korepetytor_id = ?""",
-        (imie, nazwisko, telefon, pakiet_godzin, uczen_id, korepetytor_id)
+        (imie, nazwisko, telefon, pakiet_godzin, notatki, uczen_id, korepetytor_id)
     )
     conn.commit()
     conn.close()
@@ -300,6 +319,43 @@ def get_lessons_by_date_range(korepetytor_id, data_od, data_do):
         WHERE lekcje.data BETWEEN ? AND ? AND uczniowie.korepetytor_id = ?
         ORDER BY lekcje.data ASC, lekcje.godzina ASC
     """, (data_od, data_do, korepetytor_id))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_lessons_by_student(uczen_id, korepetytor_id):
+    """
+    Zwraca WSZYSTKIE lekcje danego ucznia (każdy status), od najnowszej do najstarszej.
+    Sprawdza najpierw, że uczeń należy do podanego korepetytora.
+    """
+    student = get_student_by_id(uczen_id, korepetytor_id)
+    if student is None:
+        raise ValueError("Nie znaleziono ucznia lub brak dostępu.")
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT * FROM lekcje
+        WHERE uczen_id = ?
+        ORDER BY data DESC, godzina DESC
+    """, (uczen_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_all_lessons(korepetytor_id):
+    """Zwraca WSZYSTKIE lekcje (każdy status, każda data) dla danego korepetytora."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT lekcje.*, uczniowie.imie, uczniowie.nazwisko
+        FROM lekcje
+        JOIN uczniowie ON lekcje.uczen_id = uczniowie.id
+        WHERE uczniowie.korepetytor_id = ?
+        ORDER BY lekcje.data ASC, lekcje.godzina ASC
+    """, (korepetytor_id,))
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]

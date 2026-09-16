@@ -7,19 +7,87 @@ Uruchomienie lokalne:
 """
 
 import streamlit as st
-from datetime import date, time
+from datetime import date, time, timedelta
 import database as db
+import re
+from streamlit_calendar import calendar
 
 db.init_db()
 
-st.set_page_config(page_title="System rezerwacji korepetycji", page_icon="📚")
+
+def czy_poprawny_telefon(telefon):
+    """
+    Sprawdza, czy numer telefonu wygląda poprawnie.
+    Akceptuje puste pole (telefon jest opcjonalny), 9 cyfr, opcjonalnie z prefiksem +48.
+    Ignoruje spacje i myślniki w numerze.
+    """
+    if not telefon.strip():
+        return True  # pole opcjonalne - puste jest ok
+
+    oczyszczony = re.sub(r"[\s-]", "", telefon)
+    return bool(re.fullmatch(r"(\+48)?\d{9}", oczyszczony))
+
+
+st.set_page_config(page_title="Korepetytor +", page_icon="📚", layout="wide")
+
+# Własny CSS - ciemny, nowoczesny wygląd paska bocznego z zaokrąglonymi
+# pozycjami menu (Streamlit nie ma wbudowanej opcji do tego, więc modyfikujemy
+# wygląd bezpośrednio przez CSS, celując w wewnętrzne elementy widgetów)
+st.markdown("""
+    <style>
+    /* Ciemne tło całego paska bocznego */
+    section[data-testid="stSidebar"] {
+        background-color: #1e1b3a;
+    }
+    section[data-testid="stSidebar"] * {
+        color: #e5e7eb !important;
+    }
+
+    /* Nazwa aplikacji na górze paska bocznego */
+    .sidebar-app-title {
+        font-size: 1.9rem;
+        font-weight: 800;
+        color: #ffffff !important;
+        padding: 0.5rem 0 1.8rem 0;
+    }
+
+    /* Pozycje menu jako zaokrąglone "kafelki" zamiast zwykłych radio buttonów */
+    div[data-testid="stSidebar"] div[role="radiogroup"] {
+        gap: 0.3rem;
+    }
+    div[data-testid="stSidebar"] div[role="radiogroup"] label {
+        display: flex;
+        align-items: center;
+        font-size: 1.1rem;
+        padding: 0.7rem 1rem;
+        margin-bottom: 0.2rem;
+        border-radius: 12px;
+        transition: background-color 0.15s ease;
+        cursor: pointer;
+    }
+    div[data-testid="stSidebar"] div[role="radiogroup"] label p {
+        font-size: 1.1rem;
+    }
+    div[data-testid="stSidebar"] div[role="radiogroup"] label:hover {
+        background-color: rgba(255, 255, 255, 0.08);
+    }
+    /* Podświetlenie aktywnie wybranej pozycji menu */
+    div[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) {
+        background-color: #6366f1;
+    }
+    /* Ukrycie domyślnego kółka radio-button - zostaje sama ikona + tekst */
+    div[data-testid="stSidebar"] div[role="radiogroup"] label > div:first-child {
+        display: none;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 
 # --- EKRAN LOGOWANIA / REJESTRACJI ---
 # Pokazuje się zawsze, gdy nikt nie jest zalogowany (sprawdzamy przez session_state)
 
 def pokaz_ekran_logowania():
-    st.title("📚 System rezerwacji korepetycji")
+    st.title("📚 Korepetytor +")
 
     tab_logowanie, tab_rejestracja = st.tabs(["Zaloguj się", "Załóż konto"])
 
@@ -69,76 +137,251 @@ if "user_id" not in st.session_state:
 korepetytor_id = st.session_state["user_id"]
 
 # --- PASEK BOCZNY ---
-st.sidebar.write(f"Zalogowano jako: **{st.session_state['login']}**")
-if st.sidebar.button("Wyloguj się"):
-    del st.session_state["user_id"]
-    del st.session_state["login"]
-    st.rerun()
+st.sidebar.markdown('<div class="sidebar-app-title">📚 Korepetytor +</div>', unsafe_allow_html=True)
 
-# Usuwanie konta - z dwuetapowym potwierdzeniem, tak jak przy usuwaniu ucznia
-if st.session_state.get("potwierdz_usun_konto", False):
-    st.sidebar.warning("Usunięcie konta jest nieodwracalne — stracisz wszystkich uczniów i lekcje.")
-    col_tak, col_nie = st.sidebar.columns(2)
-    with col_tak:
-        if st.button("Tak, usuń", key="usun_konto_tak"):
-            db.delete_user(korepetytor_id)
-            del st.session_state["user_id"]
-            del st.session_state["login"]
-            del st.session_state["potwierdz_usun_konto"]
+with st.sidebar.expander(f"👤 {st.session_state['login']}"):
+    # Usuwanie konta - z dwuetapowym potwierdzeniem, tak jak przy usuwaniu ucznia
+    if st.session_state.get("potwierdz_usun_konto", False):
+        st.warning("Usunięcie konta jest nieodwracalne — stracisz wszystkich uczniów i lekcje.")
+        col_tak, col_nie = st.columns(2)
+        with col_tak:
+            if st.button("Tak, usuń", key="usun_konto_tak"):
+                db.delete_user(korepetytor_id)
+                del st.session_state["user_id"]
+                del st.session_state["login"]
+                del st.session_state["potwierdz_usun_konto"]
+                st.rerun()
+        with col_nie:
+            if st.button("Anuluj", key="usun_konto_nie"):
+                st.session_state["potwierdz_usun_konto"] = False
+                st.rerun()
+    else:
+        if st.button("🗑️ Usuń konto"):
+            st.session_state["potwierdz_usun_konto"] = True
             st.rerun()
-    with col_nie:
-        if st.button("Anuluj", key="usun_konto_nie"):
-            st.session_state["potwierdz_usun_konto"] = False
-            st.rerun()
-else:
-    if st.sidebar.button("🗑️ Usuń konto"):
-        st.session_state["potwierdz_usun_konto"] = True
+
+    st.divider()
+
+    if st.button("Wyloguj się"):
+        del st.session_state["user_id"]
+        del st.session_state["login"]
         st.rerun()
 
-st.sidebar.divider()
+st.sidebar.markdown("<br>", unsafe_allow_html=True)
 
 menu = st.sidebar.radio(
     "Menu",
-    ["Nadchodzące lekcje", "Dodaj lekcję", "Lista uczniów", "Dodaj ucznia"]
+    ["📊 Podsumowanie", "📅 Kalendarz", "➕ Dodaj lekcję", "🎓 Lista uczniów"],
+    label_visibility="collapsed"
 )
+# Usuwamy prefiksy z ikonami przy porównaniach niżej, żeby nie trzeba było
+# zmieniać całej reszty kodu odwołującej się do nazw bez ikon
+menu = menu.split(" ", 1)[1]
 
-st.title("📚 System rezerwacji korepetycji")
+# --- WIDOK: PODSUMOWANIE (DASHBOARD) ---
+if menu == "Podsumowanie":
+    st.header("📊 Podsumowanie")
 
-# --- WIDOK: NADCHODZĄCE LEKCJE ---
-if menu == "Nadchodzące lekcje":
-    st.header("Nadchodzące lekcje")
+    uczniowie = db.get_students(korepetytor_id)
+    dzis = date.today()
+    jutro = dzis + timedelta(days=1)
 
-    filtruj = st.checkbox("Filtruj po dacie")
-    if filtruj:
-        col_a, col_b = st.columns(2)
+    lekcje_dzis = db.get_lessons_by_date_range(korepetytor_id, dzis.isoformat(), dzis.isoformat())
+    lekcje_dzis = [l for l in lekcje_dzis if l["status"] == "zaplanowana"]
+
+    lekcje_jutro = db.get_lessons_by_date_range(korepetytor_id, jutro.isoformat(), jutro.isoformat())
+    lekcje_jutro = [l for l in lekcje_jutro if l["status"] == "zaplanowana"]
+
+    uczniowie_malo_godzin = [u for u in uczniowie if u["pakiet_godzin"] <= 1]
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Lekcje dzisiaj", len(lekcje_dzis))
+    with col2:
+        st.metric("Lekcje jutro", len(lekcje_jutro))
+    with col3:
+        st.metric("Liczba uczniów", len(uczniowie))
+
+    st.divider()
+
+    col_dzis, col_jutro = st.columns(2)
+
+    with col_dzis:
+        st.subheader("Dziś")
+        if not lekcje_dzis:
+            st.caption("Brak lekcji na dziś.")
+        else:
+            for lekcja in sorted(lekcje_dzis, key=lambda l: l["godzina"]):
+                st.write(f"🕒 {lekcja['godzina']} — {lekcja['imie']} {lekcja['nazwisko'] or ''}")
+                col_odbyta, col_odwolaj = st.columns(2)
+                with col_odbyta:
+                    if st.button("Odbyta", key=f"dash_odbyta_dzis_{lekcja['id']}"):
+                        db.mark_lesson_status(lekcja["id"], korepetytor_id, "odbyta")
+                        st.rerun()
+                with col_odwolaj:
+                    if st.button("Odwołaj", key=f"dash_odwolaj_dzis_{lekcja['id']}"):
+                        db.cancel_lesson(lekcja["id"], korepetytor_id)
+                        st.rerun()
+
+    with col_jutro:
+        st.subheader("Jutro")
+        if not lekcje_jutro:
+            st.caption("Brak lekcji na jutro.")
+        else:
+            for lekcja in sorted(lekcje_jutro, key=lambda l: l["godzina"]):
+                st.write(f"🕒 {lekcja['godzina']} — {lekcja['imie']} {lekcja['nazwisko'] or ''}")
+                col_odbyta, col_odwolaj = st.columns(2)
+                with col_odbyta:
+                    if st.button("Odbyta", key=f"dash_odbyta_jutro_{lekcja['id']}"):
+                        db.mark_lesson_status(lekcja["id"], korepetytor_id, "odbyta")
+                        st.rerun()
+                with col_odwolaj:
+                    if st.button("Odwołaj", key=f"dash_odwolaj_jutro_{lekcja['id']}"):
+                        db.cancel_lesson(lekcja["id"], korepetytor_id)
+                        st.rerun()
+
+    st.divider()
+
+    st.subheader("⚠️ Uczniowie z kończącym się pakietem")
+    if not uczniowie_malo_godzin:
+        st.caption("Nikomu nie kończą się godziny — wszystko w porządku.")
+    else:
+        for u in sorted(uczniowie_malo_godzin, key=lambda u: u["pakiet_godzin"]):
+            st.error(f"{u['imie']} {u['nazwisko'] or ''} — zostało {u['pakiet_godzin']}h")
+
+    st.divider()
+
+    with st.expander("📈 Raport miesięczny"):
+        nazwy_miesiecy = [
+            "Styczeń", "Luty", "Marzec", "Kwiecień", "Maj", "Czerwiec",
+            "Lipiec", "Sierpień", "Wrzesień", "Październik", "Listopad", "Grudzień"
+        ]
+
+        col_miesiac, col_rok = st.columns(2)
+        with col_miesiac:
+            wybrany_miesiac = st.selectbox("Miesiąc", nazwy_miesiecy, index=dzis.month - 1)
+        with col_rok:
+            wybrany_rok = st.selectbox("Rok", list(range(dzis.year - 2, dzis.year + 1)), index=2)
+
+        numer_miesiaca = nazwy_miesiecy.index(wybrany_miesiac) + 1
+        pierwszy_dzien = date(wybrany_rok, numer_miesiaca, 1)
+        if numer_miesiaca == 12:
+            pierwszy_dzien_kolejnego = date(wybrany_rok + 1, 1, 1)
+        else:
+            pierwszy_dzien_kolejnego = date(wybrany_rok, numer_miesiaca + 1, 1)
+        ostatni_dzien = pierwszy_dzien_kolejnego - timedelta(days=1)
+
+        lekcje_miesiac = db.get_lessons_by_date_range(
+            korepetytor_id, pierwszy_dzien.isoformat(), ostatni_dzien.isoformat()
+        )
+
+        odbyte = [l for l in lekcje_miesiac if l["status"] == "odbyta"]
+        odwolane = [l for l in lekcje_miesiac if l["status"] == "odwolana"]
+        godziny_odbyte = sum(l["czas_trwania"] for l in odbyte)
+
+        col_a, col_b, col_c = st.columns(3)
         with col_a:
-            data_od = st.date_input("Od", value=date.today())
+            st.metric("Odbyte lekcje", len(odbyte))
         with col_b:
-            data_do = st.date_input("Do", value=date.today())
-        lekcje = db.get_lessons_by_date_range(korepetytor_id, data_od.isoformat(), data_do.isoformat())
-        lekcje = [l for l in lekcje if l["status"] == "zaplanowana"]
-    else:
-        lekcje = db.get_upcoming_lessons(korepetytor_id)
+            st.metric("Godziny łącznie", godziny_odbyte)
+        with col_c:
+            st.metric("Odwołane lekcje", len(odwolane))
 
-    if not lekcje:
-        st.info("Brak zaplanowanych lekcji.")
-    else:
-        for lekcja in lekcje:
-            col1, col2, col3 = st.columns([3, 2, 1])
-            with col1:
-                st.write(f"**{lekcja['imie']} {lekcja['nazwisko'] or ''}**")
-                st.caption(f"{lekcja['data']} o {lekcja['godzina']} ({lekcja['czas_trwania']}h)")
-            with col2:
-                if lekcja["notatka"]:
-                    st.caption(f"Notatka: {lekcja['notatka']}")
-            with col3:
-                if st.button("Odbyta", key=f"odbyta_{lekcja['id']}"):
-                    db.mark_lesson_status(lekcja["id"], korepetytor_id, "odbyta")
-                    st.rerun()
-                if st.button("Odwołaj", key=f"odwolaj_{lekcja['id']}"):
-                    db.cancel_lesson(lekcja["id"], korepetytor_id)
-                    st.rerun()
+        if not odbyte:
+            st.caption("Brak odbytych lekcji w wybranym miesiącu.")
+        else:
+            st.markdown("**Rozbicie na uczniów:**")
+            podsumowanie_uczniow = {}
+            for l in odbyte:
+                klucz = f"{l['imie']} {l['nazwisko'] or ''}".strip()
+                if klucz not in podsumowanie_uczniow:
+                    podsumowanie_uczniow[klucz] = {"lekcje": 0, "godziny": 0.0}
+                podsumowanie_uczniow[klucz]["lekcje"] += 1
+                podsumowanie_uczniow[klucz]["godziny"] += l["czas_trwania"]
+
+            for uczen, dane in sorted(podsumowanie_uczniow.items()):
+                st.write(f"**{uczen}** — {dane['lekcje']} lekcji, {dane['godziny']}h")
+
+# --- WIDOK: KALENDARZ ---
+elif menu == "Kalendarz":
+    st.header("Kalendarz lekcji")
+
+    lekcje = db.get_all_lessons(korepetytor_id)
+
+    kolory_statusow = {
+        "zaplanowana": "#3b82f6",  # niebieski
+        "odbyta": "#22c55e",       # zielony
+        "odwolana": "#ef4444",     # czerwony
+    }
+
+    wydarzenia = []
+    for lekcja in lekcje:
+        try:
+            godzina_start = lekcja["godzina"]
+            godzina_h, godzina_m = map(int, godzina_start.split(":"))
+            czas_start = f"{lekcja['data']}T{godzina_start}:00"
+
+            # Obliczamy godzinę końcową na podstawie czasu trwania
+            minuty_calkowite = godzina_h * 60 + godzina_m + int(lekcja["czas_trwania"] * 60)
+            godzina_koniec = f"{(minuty_calkowite // 60) % 24:02d}:{minuty_calkowite % 60:02d}"
+            czas_koniec = f"{lekcja['data']}T{godzina_koniec}:00"
+
+            wydarzenia.append({
+                "id": str(lekcja["id"]),
+                "title": f"{lekcja['imie']} {lekcja['nazwisko'] or ''}".strip(),
+                "start": czas_start,
+                "end": czas_koniec,
+                "color": kolory_statusow.get(lekcja["status"], "#6b7280"),
+            })
+        except (ValueError, KeyError):
+            continue  # pomiń lekcję z nieprawidłowym formatem daty/godziny
+
+    opcje_kalendarza = {
+        "initialView": "dayGridMonth",
+        "locale": "pl",
+        "firstDay": 1,  # tydzień zaczyna się od poniedziałku
+        "headerToolbar": {
+            "left": "prev,next today",
+            "center": "title",
+            "right": "dayGridMonth,timeGridWeek,timeGridDay",
+        },
+        "height": 650,
+    }
+
+    stan_kalendarza = calendar(events=wydarzenia, options=opcje_kalendarza, key="kalendarz_lekcji")
+
+    st.caption("🔵 Zaplanowana &nbsp;&nbsp; 🟢 Odbyta &nbsp;&nbsp; 🔴 Odwołana", unsafe_allow_html=True)
+
+    # Obsługa kliknięcia w wydarzenie - pokazuje szczegóły i opcję odwołania
+    if stan_kalendarza and stan_kalendarza.get("eventClick"):
+        kliknieta_lekcja_id = int(stan_kalendarza["eventClick"]["event"]["id"])
+        lekcje_wg_id = {l["id"]: l for l in lekcje}
+        wybrana_lekcja = lekcje_wg_id.get(kliknieta_lekcja_id)
+
+        if wybrana_lekcja:
             st.divider()
+            st.subheader("Wybrana lekcja")
+            etykiety_statusow = {
+                "zaplanowana": "🕒 Zaplanowana",
+                "odbyta": "✅ Odbyta",
+                "odwolana": "❌ Odwołana"
+            }
+            st.write(f"**{wybrana_lekcja['imie']} {wybrana_lekcja['nazwisko'] or ''}**")
+            st.caption(
+                f"{wybrana_lekcja['data']} o {wybrana_lekcja['godzina']} "
+                f"({wybrana_lekcja['czas_trwania']}h) — "
+                f"{etykiety_statusow.get(wybrana_lekcja['status'], wybrana_lekcja['status'])}"
+            )
+            if wybrana_lekcja["notatka"]:
+                st.caption(f"Notatka: {wybrana_lekcja['notatka']}")
+
+            if wybrana_lekcja["status"] == "zaplanowana":
+                if st.button("Odwołaj tę lekcję", key=f"kalendarz_odwolaj_{kliknieta_lekcja_id}"):
+                    db.cancel_lesson(kliknieta_lekcja_id, korepetytor_id)
+                    st.success("Lekcja odwołana, godziny wróciły do pakietu ucznia.")
+                    st.rerun()
+            else:
+                st.caption("Tę lekcję można odwołać tylko, gdy ma status „Zaplanowana”.")
 
 # --- WIDOK: DODAJ LEKCJĘ ---
 elif menu == "Dodaj lekcję":
@@ -157,32 +400,110 @@ elif menu == "Dodaj lekcję":
         czas_trwania = st.number_input("Czas trwania (h)", value=1.0, step=0.5, min_value=0.5)
         notatka = st.text_input("Notatka (opcjonalnie)")
 
+        cykliczna = st.checkbox("🔁 Lekcja cykliczna (co tydzień)")
+        liczba_tygodni = 1
+        if cykliczna:
+            liczba_tygodni = st.number_input(
+                "Liczba tygodni (łącznie z pierwszą lekcją)",
+                min_value=2, max_value=52, value=4, step=1
+            )
+            godzin_lacznie = czas_trwania * liczba_tygodni
+            st.caption(f"Zostanie dodanych {liczba_tygodni} lekcji, łącznie {godzin_lacznie}h.")
+
         if st.button("Dodaj lekcję"):
             uczen_id = opcje_uczniow[wybrany]
-            db.add_lesson(
-                uczen_id=uczen_id,
-                korepetytor_id=korepetytor_id,
-                data=data_lekcji.isoformat(),
-                godzina=godzina_lekcji.strftime("%H:%M"),
-                czas_trwania=czas_trwania,
-                notatka=notatka
-            )
-            st.success("Lekcja dodana! Godziny odjęte z pakietu ucznia.")
+
+            if cykliczna:
+                for tydzien in range(liczba_tygodni):
+                    data_kolejnej = data_lekcji + timedelta(weeks=tydzien)
+                    db.add_lesson(
+                        uczen_id=uczen_id,
+                        korepetytor_id=korepetytor_id,
+                        data=data_kolejnej.isoformat(),
+                        godzina=godzina_lekcji.strftime("%H:%M"),
+                        czas_trwania=czas_trwania,
+                        notatka=notatka
+                    )
+                st.success(f"Dodano {liczba_tygodni} lekcji cyklicznych! Godziny odjęte z pakietu ucznia.")
+            else:
+                db.add_lesson(
+                    uczen_id=uczen_id,
+                    korepetytor_id=korepetytor_id,
+                    data=data_lekcji.isoformat(),
+                    godzina=godzina_lekcji.strftime("%H:%M"),
+                    czas_trwania=czas_trwania,
+                    notatka=notatka
+                )
+                st.success("Lekcja dodana! Godziny odjęte z pakietu ucznia.")
+
             st.rerun()
 
 # --- WIDOK: LISTA UCZNIÓW ---
 elif menu == "Lista uczniów":
     st.header("Lista uczniów")
+
+    # Kafelek "Dodaj nowego ucznia" - rozwijany formularz na górze strony
+    if st.button("➕ Dodaj nowego ucznia"):
+        st.session_state["pokaz_dodaj_ucznia"] = not st.session_state.get("pokaz_dodaj_ucznia", False)
+
+    if st.session_state.get("pokaz_dodaj_ucznia", False):
+        with st.container(border=True):
+            st.subheader("Nowy uczeń")
+            imie_nowy = st.text_input("Imię *", key="nowy_imie")
+            nazwisko_nowy = st.text_input("Nazwisko", key="nowy_nazwisko")
+            telefon_nowy = st.text_input("Telefon", key="nowy_telefon")
+            pakiet_godzin_nowy = st.number_input("Liczba godzin w pakiecie", value=0.0, step=0.5, min_value=0.0, key="nowy_pakiet")
+            notatki_nowy = st.text_area("Notatki (opcjonalnie)", key="nowe_notatki")
+
+            if st.button("Dodaj ucznia", key="zapisz_nowego_ucznia"):
+                if not imie_nowy.strip():
+                    st.error("Imię jest wymagane.")
+                elif not czy_poprawny_telefon(telefon_nowy):
+                    st.error("Numer telefonu wygląda niepoprawnie. Podaj 9 cyfr, opcjonalnie z prefiksem +48 (albo zostaw pole puste).")
+                else:
+                    db.add_student(korepetytor_id, imie_nowy, nazwisko_nowy, telefon_nowy, pakiet_godzin_nowy, notatki_nowy)
+                    st.session_state["pokaz_dodaj_ucznia"] = False
+                    st.success(f"Dodano ucznia: {imie_nowy} {nazwisko_nowy}")
+                    st.rerun()
+
+        st.divider()
+
     uczniowie = db.get_students(korepetytor_id)
 
     if not uczniowie:
         st.info("Brak uczniów w bazie.")
     else:
+        szukaj = st.text_input("🔍 Szukaj ucznia po imieniu lub nazwisku")
+
+        if szukaj.strip():
+            fraza = szukaj.strip().lower()
+            uczniowie = [
+                u for u in uczniowie
+                if fraza in u["imie"].lower() or fraza in (u["nazwisko"] or "").lower()
+            ]
+
+        sortowanie = st.selectbox(
+            "Sortuj według",
+            ["Imię (A-Z)", "Saldo godzin (rosnąco)", "Saldo godzin (malejąco)"]
+        )
+
+        if sortowanie == "Imię (A-Z)":
+            uczniowie = sorted(uczniowie, key=lambda u: u["imie"].lower())
+        elif sortowanie == "Saldo godzin (rosnąco)":
+            uczniowie = sorted(uczniowie, key=lambda u: u["pakiet_godzin"])
+        elif sortowanie == "Saldo godzin (malejąco)":
+            uczniowie = sorted(uczniowie, key=lambda u: u["pakiet_godzin"], reverse=True)
+
+        if not uczniowie:
+            st.info("Brak uczniów pasujących do wyszukiwania.")
+
         for u in uczniowie:
-            col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+            col1, col2, col3, col4, col5 = st.columns([3, 1, 1, 1, 1])
             with col1:
                 st.write(f"**{u['imie']} {u['nazwisko'] or ''}**")
                 st.caption(f"Tel: {u['telefon'] or 'brak'}")
+                if u["notatki"]:
+                    st.caption(f"📝 {u['notatki']}")
             with col2:
                 saldo = u["pakiet_godzin"]
                 if saldo <= 1:
@@ -193,6 +514,9 @@ elif menu == "Lista uczniów":
                 if st.button("✏️ Edytuj", key=f"edytuj_{u['id']}"):
                     st.session_state[f"pokaz_edycje_{u['id']}"] = not st.session_state.get(f"pokaz_edycje_{u['id']}", False)
             with col4:
+                if st.button("📜 Historia", key=f"historia_{u['id']}"):
+                    st.session_state[f"pokaz_historie_{u['id']}"] = not st.session_state.get(f"pokaz_historie_{u['id']}", False)
+            with col5:
                 if st.session_state.get(f"potwierdz_usun_{u['id']}", False):
                     if st.button("⚠️ Na pewno?", key=f"potwierdz_{u['id']}"):
                         db.delete_student(u["id"], korepetytor_id)
@@ -204,40 +528,49 @@ elif menu == "Lista uczniów":
                         st.session_state[f"potwierdz_usun_{u['id']}"] = True
                         st.rerun()
 
+            # Historia lekcji tego ucznia - pokazuje się po kliknięciu "Historia"
+            if st.session_state.get(f"pokaz_historie_{u['id']}", False):
+                historia = db.get_lessons_by_student(u["id"], korepetytor_id)
+                if not historia:
+                    st.caption("Brak lekcji w historii.")
+                else:
+                    etykiety_statusow = {
+                        "zaplanowana": "🕒 Zaplanowana",
+                        "odbyta": "✅ Odbyta",
+                        "odwolana": "❌ Odwołana"
+                    }
+                    for lekcja in historia:
+                        etykieta = etykiety_statusow.get(lekcja["status"], lekcja["status"])
+                        linia = f"{lekcja['data']} {lekcja['godzina']} ({lekcja['czas_trwania']}h) — {etykieta}"
+                        if lekcja["notatka"]:
+                            linia += f" — {lekcja['notatka']}"
+                        st.caption(linia)
+
             if st.session_state.get(f"pokaz_edycje_{u['id']}", False):
                 st.markdown("**Edycja danych ucznia:**")
                 nowe_imie = st.text_input("Imię", value=u["imie"], key=f"imie_{u['id']}")
                 nowe_nazwisko = st.text_input("Nazwisko", value=u["nazwisko"] or "", key=f"nazwisko_{u['id']}")
                 nowy_telefon = st.text_input("Telefon", value=u["telefon"] or "", key=f"telefon_{u['id']}")
                 nowe_saldo = st.number_input("Saldo godzin", value=float(u["pakiet_godzin"]), step=0.5, key=f"saldo_{u['id']}")
+                nowe_notatki = st.text_area(
+                    "Notatki (np. materiał, słabe strony, preferencje)",
+                    value=u["notatki"] or "",
+                    key=f"notatki_{u['id']}"
+                )
 
                 col_zapisz, col_anuluj = st.columns([1, 1])
                 with col_zapisz:
                     if st.button("💾 Zapisz zmiany", key=f"zapisz_{u['id']}"):
-                        db.update_student(u["id"], korepetytor_id, nowe_imie, nowe_nazwisko, nowy_telefon, nowe_saldo)
-                        st.session_state[f"pokaz_edycje_{u['id']}"] = False
-                        st.success("Zapisano zmiany.")
-                        st.rerun()
+                        if not czy_poprawny_telefon(nowy_telefon):
+                            st.error("Numer telefonu wygląda niepoprawnie. Podaj 9 cyfr, opcjonalnie z prefiksem +48 (albo zostaw pole puste).")
+                        else:
+                            db.update_student(u["id"], korepetytor_id, nowe_imie, nowe_nazwisko, nowy_telefon, nowe_saldo, nowe_notatki)
+                            st.session_state[f"pokaz_edycje_{u['id']}"] = False
+                            st.success("Zapisano zmiany.")
+                            st.rerun()
                 with col_anuluj:
                     if st.button("Anuluj", key=f"anuluj_{u['id']}"):
                         st.session_state[f"pokaz_edycje_{u['id']}"] = False
                         st.rerun()
 
             st.divider()
-
-# --- WIDOK: DODAJ UCZNIA ---
-elif menu == "Dodaj ucznia":
-    st.header("Dodaj nowego ucznia")
-
-    imie = st.text_input("Imię *")
-    nazwisko = st.text_input("Nazwisko")
-    telefon = st.text_input("Telefon")
-    pakiet_godzin = st.number_input("Liczba godzin w pakiecie", value=0.0, step=0.5, min_value=0.0)
-
-    if st.button("Dodaj ucznia"):
-        if not imie.strip():
-            st.error("Imię jest wymagane.")
-        else:
-            db.add_student(korepetytor_id, imie, nazwisko, telefon, pakiet_godzin)
-            st.success(f"Dodano ucznia: {imie} {nazwisko}")
-            st.rerun()
