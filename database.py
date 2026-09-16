@@ -158,6 +158,12 @@ def _migruj_baze():
     except sqlite3.OperationalError:
         pass  # kolumna już istnieje - nic do zrobienia
 
+    try:
+        cursor.execute("ALTER TABLE lekcje ADD COLUMN notatka_ucznia TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # kolumna już istnieje - nic do zrobienia
+
     # Uczniowie dodani PRZED wprowadzeniem kont uczniowskich nie mają jeszcze
     # kodu zaproszenia - dogenerowujemy go, żeby mogli założyć konto
     cursor.execute("SELECT id FROM uczniowie WHERE kod_zaproszenia IS NULL")
@@ -743,6 +749,24 @@ def get_own_lesson_history(uczen_id):
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+def update_student_lesson_note(lekcja_id, uczen_id, notatka_ucznia):
+    """
+    Zapisuje notatkę ucznia do konkretnej lekcji - tylko jeśli lekcja należy
+    do tego ucznia (sprawdzenie przez uczen_id z jego własnej sesji logowania).
+    To osobne pole od notatki korepetytora - żadne z nich nie nadpisuje drugiego.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM lekcje WHERE id = ? AND uczen_id = ?", (lekcja_id, uczen_id))
+    if cursor.fetchone() is None:
+        conn.close()
+        raise ValueError("Nie znaleziono lekcji lub brak dostępu.")
+
+    cursor.execute("UPDATE lekcje SET notatka_ucznia = ? WHERE id = ?", (notatka_ucznia, lekcja_id))
+    conn.commit()
+    conn.close()
 
 
 def cancel_lesson_by_student(lekcja_id, uczen_id):

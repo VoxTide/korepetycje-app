@@ -310,6 +310,7 @@ def pokaz_widok_ucznia():
             st.rerun()
 
     st.title(f"Cześć, {profil['imie']}! 👋")
+    pokaz_zapamietany_komunikat()
 
     col1, col2 = st.columns(2)
     with col1:
@@ -326,15 +327,30 @@ def pokaz_widok_ucznia():
             with col1:
                 st.write(f"🕒 **{lekcja['data']} o {lekcja['godzina']}** ({lekcja['czas_trwania']}h)")
                 if lekcja["notatka"]:
-                    st.caption(f"Notatka: {lekcja['notatka']}")
+                    st.caption(f"Notatka od korepetytora: {lekcja['notatka']}")
             with col2:
                 if st.button("Odwołaj", key=f"uczen_odwolaj_{lekcja['id']}"):
                     try:
                         db.cancel_lesson_by_student(lekcja["id"], uczen_id)
-                        st.success("Lekcja odwołana.")
+                        zapamietaj_komunikat("success", "Lekcja odwołana.")
                         st.rerun()
                     except ValueError as e:
                         st.error(str(e))
+
+            with st.expander("📝 Twoja notatka do tej lekcji"):
+                nowa_notatka = st.text_area(
+                    "Notatka",
+                    value=lekcja["notatka_ucznia"] or "",
+                    key=f"notatka_ucznia_{lekcja['id']}",
+                    label_visibility="collapsed",
+                    placeholder="Np. pytanie do korepetytora, prośba o powtórzenie materiału..."
+                )
+                if st.button("Zapisz notatkę", key=f"zapisz_notatke_{lekcja['id']}"):
+                    db.update_student_lesson_note(lekcja["id"], uczen_id, nowa_notatka)
+                    zapamietaj_komunikat("success", "Notatka zapisana.")
+                    st.rerun()
+
+            st.divider()
 
     st.divider()
 
@@ -450,6 +466,8 @@ if menu == "Podsumowanie":
         else:
             for lekcja in sorted(lekcje_dzis, key=lambda l: l["godzina"]):
                 st.write(f"🕒 {lekcja['godzina']} — {lekcja['imie']} {lekcja['nazwisko'] or ''}")
+                if lekcja.get("notatka_ucznia"):
+                    st.caption(f"📝 Notatka ucznia: {lekcja['notatka_ucznia']}")
                 pokaz_kontrolki_lekcji(lekcja, korepetytor_id, "dash_dzis")
                 st.divider()
 
@@ -460,6 +478,8 @@ if menu == "Podsumowanie":
         else:
             for lekcja in sorted(lekcje_jutro, key=lambda l: l["godzina"]):
                 st.write(f"🕒 {lekcja['godzina']} — {lekcja['imie']} {lekcja['nazwisko'] or ''}")
+                if lekcja.get("notatka_ucznia"):
+                    st.caption(f"📝 Notatka ucznia: {lekcja['notatka_ucznia']}")
                 pokaz_kontrolki_lekcji(lekcja, korepetytor_id, "dash_jutro")
                 st.divider()
 
@@ -608,6 +628,8 @@ elif menu == "Kalendarz":
             )
             if wybrana_lekcja["notatka"]:
                 st.caption(f"Notatka: {wybrana_lekcja['notatka']}")
+            if wybrana_lekcja.get("notatka_ucznia"):
+                st.caption(f"📝 Notatka ucznia: {wybrana_lekcja['notatka_ucznia']}")
 
             pokaz_kontrolki_lekcji(wybrana_lekcja, korepetytor_id, "kalendarz")
 
@@ -801,6 +823,8 @@ elif menu == "Lista uczniów":
                         if lekcja["notatka"]:
                             linia += f" — {lekcja['notatka']}"
                         st.write(linia)
+                        if lekcja.get("notatka_ucznia"):
+                            st.caption(f"📝 Notatka ucznia: {lekcja['notatka_ucznia']}")
                         pokaz_kontrolki_lekcji(lekcja, korepetytor_id, "historia")
                         st.divider()
 
