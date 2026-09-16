@@ -11,6 +11,7 @@ from datetime import date, time, timedelta
 import database as db
 import re
 from streamlit_calendar import calendar
+import poczta
 
 db.init_db()
 
@@ -87,16 +88,6 @@ st.markdown("""
 # Pokazuje się zawsze, gdy nikt nie jest zalogowany (sprawdzamy przez session_state)
 
 def pokaz_ekran_logowania():
-    st.title("📚 Korepetytor +")
-
-    PYTANIA_BEZPIECZENSTWA = [
-        "Jak nazywał się Twój pierwszy zwierzak?",
-        "W jakim mieście się urodziłeś/aś?",
-        "Jak miała na imię Twoja pierwsza nauczycielka?",
-        "Jak nazywała się Twoja podstawowa szkoła?",
-        "Jakie jest nazwisko panieńskie Twojej mamy?",
-    ]
-
     tab_logowanie, tab_rejestracja, tab_reset = st.tabs(["Zaloguj się", "Załóż konto", "Zapomniałem hasła"])
 
     with tab_logowanie:
@@ -117,80 +108,195 @@ def pokaz_ekran_logowania():
 
     with tab_rejestracja:
         nowy_login = st.text_input("Wybierz login", key="login_rejestracja")
+        nowy_email = st.text_input("Adres e-mail (potrzebny do resetu hasła)", key="email_rejestracja")
         nowe_haslo = st.text_input("Wybierz hasło", type="password", key="haslo_rejestracja")
         powtorz_haslo = st.text_input("Powtórz hasło", type="password", key="haslo_rejestracja_2")
-        wybrane_pytanie = st.selectbox("Pytanie bezpieczeństwa (do resetu hasła)", PYTANIA_BEZPIECZENSTWA)
-        odpowiedz = st.text_input("Twoja odpowiedź", key="odpowiedz_rejestracja")
 
         if st.button("Załóż konto"):
-            if not nowy_login or not nowe_haslo or not odpowiedz.strip():
-                st.error("Wypełnij wszystkie pola, łącznie z odpowiedzią na pytanie bezpieczeństwa.")
+            if not nowy_login or not nowe_haslo or not nowy_email.strip():
+                st.error("Wypełnij wszystkie pola, łącznie z adresem e-mail.")
             elif nowe_haslo != powtorz_haslo:
                 st.error("Hasła nie są identyczne.")
             elif len(nowe_haslo) < 4:
                 st.error("Hasło musi mieć co najmniej 4 znaki.")
             else:
                 try:
-                    db.create_user(nowy_login, nowe_haslo, wybrane_pytanie, odpowiedz)
+                    db.create_user(nowy_login, nowe_haslo, nowy_email.strip())
                     st.success("Konto utworzone! Możesz się teraz zalogować w zakładce obok.")
                 except ValueError as e:
                     st.error(str(e))
 
     with tab_reset:
-        st.caption("Podaj swój login, odpowiedz na pytanie bezpieczeństwa, a następnie ustaw nowe hasło.")
+        st.caption("Podaj swój login, na Twój adres e-mail wyślemy kod, którym ustawisz nowe hasło.")
 
-        # Etap 1: podanie loginu i pobranie pytania bezpieczeństwa
+        # Etap 1: podanie loginu i wysłanie kodu na e-mail
         login_reset = st.text_input("Login", key="login_reset")
 
-        if st.button("Dalej", key="reset_krok1"):
-            pytanie = db.get_security_question(login_reset)
-            if pytanie is None:
+        if st.button("Wyślij kod na e-mail", key="reset_krok1"):
+            email_konta = db.get_user_email(login_reset)
+            if email_konta is None:
                 st.error("Nie znaleziono konta o takim loginie.")
-            elif not pytanie:
-                st.error("To konto nie ma ustawionego pytania bezpieczeństwa - reset nie jest możliwy.")
+            elif not email_konta:
+                st.error("To konto nie ma przypisanego adresu e-mail - reset nie jest możliwy. Załóż nowe konto.")
             else:
-                st.session_state["reset_login"] = login_reset
-                st.session_state["reset_pytanie"] = pytanie
-                st.session_state["reset_zweryfikowano"] = False
-
-        # Etap 2: odpowiedź na pytanie bezpieczeństwa
-        if st.session_state.get("reset_login") and not st.session_state.get("reset_zweryfikowano"):
-            st.write(f"**{st.session_state['reset_pytanie']}**")
-            odpowiedz_reset = st.text_input("Twoja odpowiedź", key="odpowiedz_reset")
-
-            if st.button("Sprawdź odpowiedź", key="reset_krok2"):
-                if db.verify_security_answer(st.session_state["reset_login"], odpowiedz_reset):
-                    st.session_state["reset_zweryfikowano"] = True
-                    st.rerun()
+                kod = db.wygeneruj_kod_resetu(login_reset)
+                udalo_sie, blad = poczta.wyslij_maila(
+                    email_konta,
+                    "Kod resetu hasła - Korepetytor +",
+                    poczta.szablon_kodu_resetu(kod)
+                )
+                if udalo_sie:
+                    st.session_state["reset_login"] = login_reset
+                    st.success(f"Wysłano kod na adres {email_konta}. Sprawdź skrzynkę (także spam).")
                 else:
-                    st.error("Niepoprawna odpowiedź.")
+                    st.error(f"Nie udało się wysłać e-maila: {blad}")
 
-        # Etap 3: ustawienie nowego hasła
-        if st.session_state.get("reset_zweryfikowano"):
-            st.success("Odpowiedź poprawna. Ustaw nowe hasło.")
+        # Etap 2: podanie kodu i nowego hasła
+        if st.session_state.get("reset_login"):
+            st.divider()
+            kod_wpisany = st.text_input("Kod z e-maila", key="kod_reset")
             nowe_haslo_reset = st.text_input("Nowe hasło", type="password", key="nowe_haslo_reset")
             powtorz_haslo_reset = st.text_input("Powtórz nowe hasło", type="password", key="powtorz_haslo_reset")
 
-            if st.button("Zresetuj hasło", key="reset_krok3"):
-                if nowe_haslo_reset != powtorz_haslo_reset:
+            if st.button("Zresetuj hasło", key="reset_krok2"):
+                if not db.zweryfikuj_kod_resetu(st.session_state["reset_login"], kod_wpisany):
+                    st.error("Niepoprawny lub wygasły kod. Poproś o nowy kod powyżej.")
+                elif nowe_haslo_reset != powtorz_haslo_reset:
                     st.error("Hasła nie są identyczne.")
                 elif len(nowe_haslo_reset) < 4:
                     st.error("Hasło musi mieć co najmniej 4 znaki.")
                 else:
                     db.reset_password(st.session_state["reset_login"], nowe_haslo_reset)
+                    db.wyczysc_kod_resetu(st.session_state["reset_login"])
                     st.success("Hasło zostało zmienione! Możesz się teraz zalogować w zakładce obok.")
                     del st.session_state["reset_login"]
-                    del st.session_state["reset_pytanie"]
-                    del st.session_state["reset_zweryfikowano"]
+
+
+def pokaz_ekran_logowania_ucznia():
+    tab_logowanie, tab_rejestracja = st.tabs(["Zaloguj się", "Załóż konto"])
+
+    with tab_logowanie:
+        login = st.text_input("Login", key="login_uczen")
+        haslo = st.text_input("Hasło", type="password", key="haslo_uczen")
+
+        if st.button("Zaloguj się", key="zaloguj_uczen"):
+            if not login or not haslo:
+                st.error("Podaj login i hasło.")
+            else:
+                uczen_id = db.verify_student(login, haslo)
+                if uczen_id is None:
+                    st.error("Nieprawidłowy login lub hasło.")
+                else:
+                    st.session_state["uczen_konto_id"] = uczen_id
+                    st.session_state["uczen_login"] = login
+                    st.rerun()
+
+    with tab_rejestracja:
+        st.caption(
+            "Aby założyć konto, potrzebujesz kodu zaproszenia od swojego korepetytora "
+            "(znajduje się w widoku „Lista uczniów” w jego aplikacji)."
+        )
+        kod = st.text_input("Kod zaproszenia", key="kod_zaproszenia_rejestracja")
+        nowy_login = st.text_input("Wybierz login", key="login_rejestracja_uczen")
+        nowe_haslo = st.text_input("Wybierz hasło", type="password", key="haslo_rejestracja_uczen")
+        powtorz_haslo = st.text_input("Powtórz hasło", type="password", key="haslo_rejestracja_uczen_2")
+
+        if st.button("Załóż konto", key="zaloz_konto_uczen"):
+            if not kod.strip() or not nowy_login or not nowe_haslo:
+                st.error("Wypełnij wszystkie pola.")
+            elif nowe_haslo != powtorz_haslo:
+                st.error("Hasła nie są identyczne.")
+            elif len(nowe_haslo) < 4:
+                st.error("Hasło musi mieć co najmniej 4 znaki.")
+            else:
+                try:
+                    db.stworz_konto_ucznia(kod, nowy_login, nowe_haslo)
+                    st.success("Konto utworzone! Możesz się teraz zalogować w zakładce obok.")
+                except ValueError as e:
+                    st.error(str(e))
+
+
+def pokaz_widok_ucznia():
+    """Uproszczony, wyłącznie do odczytu widok dla zalogowanego ucznia - jego własne dane i lekcje."""
+    uczen_id = st.session_state["uczen_konto_id"]
+    profil = db.get_student_own_profile(uczen_id)
+
+    if profil is None:
+        st.error("Nie znaleziono Twojego profilu - skontaktuj się z korepetytorem.")
+        if st.button("Wyloguj się"):
+            del st.session_state["uczen_konto_id"]
+            del st.session_state["uczen_login"]
+            st.rerun()
+        return
+
+    st.sidebar.markdown('<div class="sidebar-app-title">📚 Korepetytor +</div>', unsafe_allow_html=True)
+    with st.sidebar.expander(f"🎓 {profil['imie']}"):
+        if st.button("Wyloguj się", key="wyloguj_uczen"):
+            del st.session_state["uczen_konto_id"]
+            del st.session_state["uczen_login"]
+            st.rerun()
+
+    st.title(f"Cześć, {profil['imie']}! 👋")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Pozostałe godziny w pakiecie", f"{profil['pakiet_godzin']}h")
+
+    lekcje_nadchodzace = db.get_own_upcoming_lessons(uczen_id)
+
+    st.subheader("Nadchodzące lekcje")
+    if not lekcje_nadchodzace:
+        st.caption("Brak zaplanowanych lekcji.")
+    else:
+        for lekcja in lekcje_nadchodzace:
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.write(f"🕒 **{lekcja['data']} o {lekcja['godzina']}** ({lekcja['czas_trwania']}h)")
+                if lekcja["notatka"]:
+                    st.caption(f"Notatka: {lekcja['notatka']}")
+            with col2:
+                if st.button("Odwołaj", key=f"uczen_odwolaj_{lekcja['id']}"):
+                    try:
+                        db.cancel_lesson_by_student(lekcja["id"], uczen_id)
+                        st.success("Lekcja odwołana.")
+                        st.rerun()
+                    except ValueError as e:
+                        st.error(str(e))
+
+    st.divider()
+
+    with st.expander("📜 Historia lekcji"):
+        historia = db.get_own_lesson_history(uczen_id)
+        if not historia:
+            st.caption("Brak lekcji w historii.")
+        else:
+            etykiety_statusow = {
+                "zaplanowana": "🕒 Zaplanowana",
+                "odbyta": "✅ Odbyta",
+                "odwolana": "❌ Odwołana"
+            }
+            for lekcja in historia:
+                etykieta = etykiety_statusow.get(lekcja["status"], lekcja["status"])
+                st.caption(f"{lekcja['data']} {lekcja['godzina']} ({lekcja['czas_trwania']}h) — {etykieta}")
 
 
 # --- SPRAWDZENIE, CZY UŻYTKOWNIK JEST ZALOGOWANY ---
 
-if "user_id" not in st.session_state:
-    pokaz_ekran_logowania()
+if "user_id" not in st.session_state and "uczen_konto_id" not in st.session_state:
+    st.title("📚 Korepetytor +")
+    rola = st.radio("Kim jesteś?", ["Korepetytor", "Uczeń"], horizontal=True, label_visibility="collapsed")
+    st.divider()
+    if rola == "Korepetytor":
+        pokaz_ekran_logowania()
+    else:
+        pokaz_ekran_logowania_ucznia()
     st.stop()  # zatrzymuje wykonywanie reszty skryptu, dopóki ktoś się nie zaloguje
 
-# Od tego miejsca w dół — użytkownik jest już zalogowany
+if "uczen_konto_id" in st.session_state:
+    pokaz_widok_ucznia()
+    st.stop()  # widok ucznia jest całkowicie osobny - reszta pliku (aplikacja korepetytora) go nie dotyczy
+
+# Od tego miejsca w dół — zalogowany jest korepetytor
 korepetytor_id = st.session_state["user_id"]
 
 # --- PASEK BOCZNY ---
@@ -448,10 +554,13 @@ elif menu == "Dodaj lekcję":
     if not uczniowie:
         st.warning("Najpierw dodaj przynajmniej jednego ucznia.")
     else:
+        uczniowie_wg_id = {u["id"]: u for u in uczniowie}
         opcje_uczniow = {f"{u['imie']} {u['nazwisko'] or ''} (saldo: {u['pakiet_godzin']}h)": u["id"]
                           for u in uczniowie}
 
         wybrany = st.selectbox("Uczeń", options=list(opcje_uczniow.keys()))
+        dane_wybranego = uczniowie_wg_id[opcje_uczniow[wybrany]]
+
         data_lekcji = st.date_input("Data", value=date.today())
         godzina_lekcji = st.time_input("Godzina", value=time(16, 0))
         czas_trwania = st.number_input("Czas trwania (h)", value=1.0, step=0.5, min_value=0.5)
@@ -466,6 +575,12 @@ elif menu == "Dodaj lekcję":
             )
             godzin_lacznie = czas_trwania * liczba_tygodni
             st.caption(f"Zostanie dodanych {liczba_tygodni} lekcji, łącznie {godzin_lacznie}h.")
+
+        if dane_wybranego["email"]:
+            wyslij_powiadomienie = st.checkbox("📧 Wyślij powiadomienie e-mailem do ucznia", value=True)
+        else:
+            wyslij_powiadomienie = False
+            st.caption("Uczeń nie ma podanego adresu e-mail - powiadomienie nie zostanie wysłane.")
 
         if st.button("Dodaj lekcję"):
             uczen_id = opcje_uczniow[wybrany]
@@ -482,6 +597,17 @@ elif menu == "Dodaj lekcję":
                         notatka=notatka
                     )
                 st.success(f"Dodano {liczba_tygodni} lekcji cyklicznych! Godziny odjęte z pakietu ucznia.")
+
+                if wyslij_powiadomienie:
+                    tresc = poczta.szablon_powiadomienia_o_serii(
+                        dane_wybranego["imie"], data_lekcji.isoformat(),
+                        godzina_lekcji.strftime("%H:%M"), czas_trwania, liczba_tygodni
+                    )
+                    udalo_sie, blad = poczta.wyslij_maila(
+                        dane_wybranego["email"], "Nowe lekcje zaplanowane - Korepetytor +", tresc
+                    )
+                    if not udalo_sie:
+                        st.warning(f"Lekcje dodane, ale nie udało się wysłać powiadomienia e-mail: {blad}")
             else:
                 db.add_lesson(
                     uczen_id=uczen_id,
@@ -492,6 +618,17 @@ elif menu == "Dodaj lekcję":
                     notatka=notatka
                 )
                 st.success("Lekcja dodana! Godziny odjęte z pakietu ucznia.")
+
+                if wyslij_powiadomienie:
+                    tresc = poczta.szablon_powiadomienia_o_lekcji(
+                        dane_wybranego["imie"], data_lekcji.isoformat(),
+                        godzina_lekcji.strftime("%H:%M"), czas_trwania
+                    )
+                    udalo_sie, blad = poczta.wyslij_maila(
+                        dane_wybranego["email"], "Przypomnienie o lekcji - Korepetytor +", tresc
+                    )
+                    if not udalo_sie:
+                        st.warning(f"Lekcja dodana, ale nie udało się wysłać powiadomienia e-mail: {blad}")
 
             st.rerun()
 
@@ -509,6 +646,7 @@ elif menu == "Lista uczniów":
             imie_nowy = st.text_input("Imię *", key="nowy_imie")
             nazwisko_nowy = st.text_input("Nazwisko", key="nowy_nazwisko")
             telefon_nowy = st.text_input("Telefon", key="nowy_telefon")
+            email_nowy = st.text_input("E-mail (do powiadomień o lekcjach)", key="nowy_email")
             pakiet_godzin_nowy = st.number_input("Liczba godzin w pakiecie", value=0.0, step=0.5, min_value=0.0, key="nowy_pakiet")
             notatki_nowy = st.text_area("Notatki (opcjonalnie)", key="nowe_notatki")
 
@@ -518,7 +656,7 @@ elif menu == "Lista uczniów":
                 elif not czy_poprawny_telefon(telefon_nowy):
                     st.error("Numer telefonu wygląda niepoprawnie. Podaj 9 cyfr, opcjonalnie z prefiksem +48 (albo zostaw pole puste).")
                 else:
-                    db.add_student(korepetytor_id, imie_nowy, nazwisko_nowy, telefon_nowy, pakiet_godzin_nowy, notatki_nowy)
+                    db.add_student(korepetytor_id, imie_nowy, nazwisko_nowy, telefon_nowy, pakiet_godzin_nowy, notatki_nowy, email_nowy)
                     st.session_state["pokaz_dodaj_ucznia"] = False
                     st.success(f"Dodano ucznia: {imie_nowy} {nazwisko_nowy}")
                     st.rerun()
@@ -605,9 +743,16 @@ elif menu == "Lista uczniów":
 
             if st.session_state.get(f"pokaz_edycje_{u['id']}", False):
                 st.markdown("**Edycja danych ucznia:**")
+
+                if db.czy_uczen_ma_konto(u["id"]):
+                    st.caption("✅ Ten uczeń założył już własne konto w aplikacji.")
+                else:
+                    st.info(f"🔑 Kod zaproszenia dla ucznia (do założenia własnego konta): **{u['kod_zaproszenia']}**")
+
                 nowe_imie = st.text_input("Imię", value=u["imie"], key=f"imie_{u['id']}")
                 nowe_nazwisko = st.text_input("Nazwisko", value=u["nazwisko"] or "", key=f"nazwisko_{u['id']}")
                 nowy_telefon = st.text_input("Telefon", value=u["telefon"] or "", key=f"telefon_{u['id']}")
+                nowy_email = st.text_input("E-mail (do powiadomień o lekcjach)", value=u["email"] or "", key=f"email_{u['id']}")
                 nowe_saldo = st.number_input("Saldo godzin", value=float(u["pakiet_godzin"]), step=0.5, key=f"saldo_{u['id']}")
                 nowe_notatki = st.text_area(
                     "Notatki (np. materiał, słabe strony, preferencje)",
@@ -621,7 +766,7 @@ elif menu == "Lista uczniów":
                         if not czy_poprawny_telefon(nowy_telefon):
                             st.error("Numer telefonu wygląda niepoprawnie. Podaj 9 cyfr, opcjonalnie z prefiksem +48 (albo zostaw pole puste).")
                         else:
-                            db.update_student(u["id"], korepetytor_id, nowe_imie, nowe_nazwisko, nowy_telefon, nowe_saldo, nowe_notatki)
+                            db.update_student(u["id"], korepetytor_id, nowe_imie, nowe_nazwisko, nowy_telefon, nowe_saldo, nowe_notatki, nowy_email)
                             st.session_state[f"pokaz_edycje_{u['id']}"] = False
                             st.success("Zapisano zmiany.")
                             st.rerun()

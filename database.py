@@ -11,7 +11,7 @@ Struktura:
 import sqlite3
 import hashlib
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 
 DB_NAME = "korepetycje.db"
 
@@ -71,6 +71,18 @@ def init_db():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS konta_uczniow (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            uczen_id INTEGER NOT NULL UNIQUE,
+            login TEXT NOT NULL UNIQUE,
+            hash_hasla TEXT NOT NULL,
+            sol TEXT NOT NULL,
+            utworzono TEXT NOT NULL,
+            FOREIGN KEY (uczen_id) REFERENCES uczniowie (id)
+        )
+    """)
+
     conn.commit()
     conn.close()
     _migruj_baze()
@@ -124,6 +136,9 @@ def _migruj_baze():
         ("pytanie_bezpieczenstwa", "TEXT"),
         ("hash_odpowiedzi", "TEXT"),
         ("sol_odpowiedzi", "TEXT"),
+        ("email", "TEXT"),
+        ("reset_kod", "TEXT"),
+        ("reset_wygasa", "TEXT"),
     ]:
         try:
             cursor.execute(f"ALTER TABLE uzytkownicy ADD COLUMN {kolumna} {typ}")
@@ -131,10 +146,40 @@ def _migruj_baze():
         except sqlite3.OperationalError:
             pass  # kolumna już istnieje - nic do zrobienia
 
+    try:
+        cursor.execute("ALTER TABLE uczniowie ADD COLUMN email TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # kolumna już istnieje - nic do zrobienia
+
+    try:
+        cursor.execute("ALTER TABLE uczniowie ADD COLUMN kod_zaproszenia TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # kolumna już istnieje - nic do zrobienia
+
+    # Uczniowie dodani PRZED wprowadzeniem kont uczniowskich nie mają jeszcze
+    # kodu zaproszenia - dogenerowujemy go, żeby mogli założyć konto
+    cursor.execute("SELECT id FROM uczniowie WHERE kod_zaproszenia IS NULL")
+    do_uzupelnienia = cursor.fetchall()
+    for wiersz in do_uzupelnienia:
+        cursor.execute(
+            "UPDATE uczniowie SET kod_zaproszenia = ? WHERE id = ?",
+            (_wygeneruj_kod_zaproszenia(), wiersz["id"])
+        )
+    if do_uzupelnienia:
+        conn.commit()
+
     conn.close()
 
 
 # --- HASŁA (haszowanie z solą) ---
+
+def _wygeneruj_kod_zaproszenia():
+    """Generuje krótki, czytelny kod zaproszenia dla ucznia (np. 8A3F9K2C)."""
+    znaki = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # bez znaków łatwych do pomylenia (0/O, 1/I)
+    return "".join(secrets.choice(znaki) for _ in range(8))
+
 
 def _hash_password(password, sol=None):
     """Haszuje hasło z solą (PBKDF2). Zwraca (hash, sol)."""
@@ -146,9 +191,9 @@ def _hash_password(password, sol=None):
 
 # --- UŻYTKOWNICY (konta korepetytorów) ---
 
-def create_user(login, password, pytanie_bezpieczenstwa, odpowiedz_bezpieczenstwa):
+def create_user(login, password, email):
     """
-    Tworzy nowe konto wraz z pytaniem i odpowiedzią bezpieczeństwa (do resetu hasła).
+    Tworzy nowe konto z adresem e-mail (potrzebnym do resetu hasła).
     Zwraca id nowego użytkownika.
     Rzuca ValueError, jeśli login jest już zajęty.
     """
@@ -161,16 +206,11 @@ def create_user(login, password, pytanie_bezpieczenstwa, odpowiedz_bezpieczenstw
         raise ValueError("Ten login jest już zajęty.")
 
     hash_hasla, sol = _hash_password(password)
-    # Odpowiedź na pytanie bezpieczeństwa haszujemy tak samo jak hasło,
-    # a przed haszowaniem normalizujemy (mała litera, bez spacji na końcach),
-    # żeby drobne różnice w pisowni (wielkość liter) nie blokowały resetu
-    hash_odp, sol_odp = _hash_password(odpowiedz_bezpieczenstwa.strip().lower())
 
     cursor.execute(
-        """INSERT INTO uzytkownicy
-           (login, hash_hasla, sol, pytanie_bezpieczenstwa, hash_odpowiedzi, sol_odpowiedzi, utworzono)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (login, hash_hasla, sol, pytanie_bezpieczenstwa, hash_odp, sol_odp, datetime.now().isoformat())
+        """INSERT INTO uzytkownicy (login, hash_hasla, sol, email, utworzono)
+           VALUES (?, ?, ?, ?, ?)""",
+        (login, hash_hasla, sol, email, datetime.now().isoformat())
     )
     conn.commit()
     new_id = cursor.lastrowid
@@ -198,29 +238,67 @@ def verify_user(login, password):
     return None
 
 
-def get_security_question(login):
-    """Zwraca pytanie bezpieczeństwa dla danego loginu, albo None jeśli konto nie istnieje."""
+def get_user_email(login):
+    """Zwraca adres e-mail przypisany do konta, albo None jeśli konto nie istnieje lub nie ma e-maila."""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT pytanie_bezpieczenstwa FROM uzytkownicy WHERE login = ?", (login,))
+    cursor.execute("SELECT email FROM uzytkownicy WHERE login = ?", (login,))
     row = cursor.fetchone()
     conn.close()
-    return row["pytanie_bezpieczenstwa"] if row else None
+    return row["email"] if row else None
 
 
-def verify_security_answer(login, odpowiedz):
-    """Sprawdza odpowiedź na pytanie bezpieczeństwa. Zwraca True/False."""
+def wygeneruj_kod_resetu(login):
+    """
+    Generuje 6-cyfrowy kod resetu hasła, ważny 15 minut, i zapisuje go w bazie.
+    Zwraca wygenerowany kod (do wysłania e-mailem) albo None, jeśli konto nie istnieje.
+    """
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT hash_odpowiedzi, sol_odpowiedzi FROM uzytkownicy WHERE login = ?", (login,))
+    cursor.execute("SELECT id FROM uzytkownicy WHERE login = ?", (login,))
+    if cursor.fetchone() is None:
+        conn.close()
+        return None
+
+    kod = f"{secrets.randbelow(1_000_000):06d}"
+    wygasa = (datetime.now() + timedelta(minutes=15)).isoformat()
+
+    cursor.execute(
+        "UPDATE uzytkownicy SET reset_kod = ?, reset_wygasa = ? WHERE login = ?",
+        (kod, wygasa, login)
+    )
+    conn.commit()
+    conn.close()
+    return kod
+
+
+def zweryfikuj_kod_resetu(login, podany_kod):
+    """Sprawdza, czy podany kod resetu jest poprawny i nie wygasł."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT reset_kod, reset_wygasa FROM uzytkownicy WHERE login = ?", (login,))
     row = cursor.fetchone()
     conn.close()
 
-    if row is None or row["hash_odpowiedzi"] is None:
+    if row is None or row["reset_kod"] is None:
         return False
+    if row["reset_kod"] != podany_kod.strip():
+        return False
+    if datetime.now() > datetime.fromisoformat(row["reset_wygasa"]):
+        return False
+    return True
 
-    proby_hash, _ = _hash_password(odpowiedz.strip().lower(), row["sol_odpowiedzi"])
-    return proby_hash == row["hash_odpowiedzi"]
+
+def wyczysc_kod_resetu(login):
+    """Kasuje zużyty/wygasły kod resetu, żeby nie dało się go użyć ponownie."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE uzytkownicy SET reset_kod = NULL, reset_wygasa = NULL WHERE login = ?",
+        (login,)
+    )
+    conn.commit()
+    conn.close()
 
 
 def reset_password(login, nowe_haslo):
@@ -262,14 +340,16 @@ def delete_user(korepetytor_id):
 
 # --- UCZNIOWIE (zawsze filtrowane po korepetytor_id) ---
 
-def add_student(korepetytor_id, imie, nazwisko, telefon, pakiet_godzin, notatki=""):
-    """Dodaje nowego ucznia przypisanego do konkretnego korepetytora."""
+def add_student(korepetytor_id, imie, nazwisko, telefon, pakiet_godzin, notatki="", email=""):
+    """Dodaje nowego ucznia przypisanego do konkretnego korepetytora, z wygenerowanym kodem zaproszenia."""
     conn = get_connection()
     cursor = conn.cursor()
+    kod = _wygeneruj_kod_zaproszenia()
     cursor.execute(
-        """INSERT INTO uczniowie (korepetytor_id, imie, nazwisko, telefon, pakiet_godzin, notatki, utworzono)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (korepetytor_id, imie, nazwisko, telefon, pakiet_godzin, notatki, datetime.now().isoformat())
+        """INSERT INTO uczniowie
+           (korepetytor_id, imie, nazwisko, telefon, pakiet_godzin, notatki, email, kod_zaproszenia, utworzono)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (korepetytor_id, imie, nazwisko, telefon, pakiet_godzin, notatki, email, kod, datetime.now().isoformat())
     )
     conn.commit()
     new_id = cursor.lastrowid
@@ -307,15 +387,15 @@ def get_student_by_id(uczen_id, korepetytor_id):
     return dict(row) if row else None
 
 
-def update_student(uczen_id, korepetytor_id, imie, nazwisko, telefon, pakiet_godzin, notatki=""):
+def update_student(uczen_id, korepetytor_id, imie, nazwisko, telefon, pakiet_godzin, notatki="", email=""):
     """Aktualizuje dane ucznia — tylko jeśli należy do tego korepetytora."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
         """UPDATE uczniowie
-           SET imie = ?, nazwisko = ?, telefon = ?, pakiet_godzin = ?, notatki = ?
+           SET imie = ?, nazwisko = ?, telefon = ?, pakiet_godzin = ?, notatki = ?, email = ?
            WHERE id = ? AND korepetytor_id = ?""",
-        (imie, nazwisko, telefon, pakiet_godzin, notatki, uczen_id, korepetytor_id)
+        (imie, nazwisko, telefon, pakiet_godzin, notatki, email, uczen_id, korepetytor_id)
     )
     conn.commit()
     conn.close()
@@ -487,3 +567,147 @@ def cancel_lesson(lekcja_id, korepetytor_id):
 
     mark_lesson_status(lekcja_id, korepetytor_id, "odwolana")
     adjust_student_hours(lekcja["uczen_id"], korepetytor_id, lekcja["czas_trwania"])
+
+
+# --- KONTA UCZNIÓW (osobny system logowania, niezależny od kont korepetytorów) ---
+
+def get_invite_code(uczen_id, korepetytor_id):
+    """Zwraca kod zaproszenia ucznia — tylko jeśli należy do tego korepetytora."""
+    uczen = get_student_by_id(uczen_id, korepetytor_id)
+    return uczen["kod_zaproszenia"] if uczen else None
+
+
+def czy_uczen_ma_konto(uczen_id):
+    """Sprawdza, czy dany uczeń już założył sobie konto."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM konta_uczniow WHERE uczen_id = ?", (uczen_id,))
+    istnieje = cursor.fetchone() is not None
+    conn.close()
+    return istnieje
+
+
+def stworz_konto_ucznia(kod_zaproszenia, login, haslo):
+    """
+    Zakłada konto uczniowskie na podstawie kodu zaproszenia otrzymanego od korepetytora.
+    Zwraca id nowego konta. Rzuca ValueError przy nieprawidłowym kodzie, zajętym
+    loginie, albo jeśli dany uczeń już ma założone konto.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT id FROM uczniowie WHERE kod_zaproszenia = ?", (kod_zaproszenia.strip().upper(),))
+    uczen = cursor.fetchone()
+    if uczen is None:
+        conn.close()
+        raise ValueError("Nieprawidłowy kod zaproszenia.")
+
+    uczen_id = uczen["id"]
+
+    cursor.execute("SELECT id FROM konta_uczniow WHERE uczen_id = ?", (uczen_id,))
+    if cursor.fetchone() is not None:
+        conn.close()
+        raise ValueError("Dla tego ucznia istnieje już założone konto.")
+
+    cursor.execute("SELECT id FROM konta_uczniow WHERE login = ?", (login,))
+    if cursor.fetchone() is not None:
+        conn.close()
+        raise ValueError("Ten login jest już zajęty.")
+
+    hash_hasla, sol = _hash_password(haslo)
+    cursor.execute(
+        """INSERT INTO konta_uczniow (uczen_id, login, hash_hasla, sol, utworzono)
+           VALUES (?, ?, ?, ?, ?)""",
+        (uczen_id, login, hash_hasla, sol, datetime.now().isoformat())
+    )
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return new_id
+
+
+def verify_student(login, haslo):
+    """Sprawdza dane logowania ucznia. Zwraca uczen_id jeśli poprawne, None jeśli nie."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT uczen_id, hash_hasla, sol FROM konta_uczniow WHERE login = ?", (login,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None:
+        return None
+
+    proby_hash, _ = _hash_password(haslo, row["sol"])
+    if proby_hash == row["hash_hasla"]:
+        return row["uczen_id"]
+    return None
+
+
+def get_student_own_profile(uczen_id):
+    """
+    Zwraca dane ucznia bez sprawdzania właściciela (korepetytora) - używane
+    WYŁĄCZNIE do pokazania uczniowi jego własnych danych po zalogowaniu na
+    jego konto, gdzie uczen_id pochodzi z jego własnej, zweryfikowanej sesji.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM uczniowie WHERE id = ?", (uczen_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_own_upcoming_lessons(uczen_id):
+    """Zwraca zaplanowane lekcje danego ucznia - do użytku w jego własnym, zalogowanym widoku."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT * FROM lekcje
+        WHERE uczen_id = ? AND status = 'zaplanowana'
+        ORDER BY data ASC, godzina ASC
+    """, (uczen_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_own_lesson_history(uczen_id):
+    """Zwraca WSZYSTKIE lekcje danego ucznia (każdy status) - do jego własnego widoku historii."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT * FROM lekcje
+        WHERE uczen_id = ?
+        ORDER BY data DESC, godzina DESC
+    """, (uczen_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def cancel_lesson_by_student(lekcja_id, uczen_id):
+    """
+    Pozwala uczniowi odwołać SWOJĄ własną, zaplanowaną lekcję - bez znajomości
+    korepetytor_id (uczeń nie ma do niego dostępu, więc nie może korzystać
+    z cancel_lesson). Sprawdzenie własności odbywa się przez uczen_id, które
+    pochodzi z jego własnej, zweryfikowanej sesji logowania.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM lekcje WHERE id = ? AND uczen_id = ?", (lekcja_id, uczen_id))
+    lekcja = cursor.fetchone()
+
+    if lekcja is None:
+        conn.close()
+        raise ValueError("Nie znaleziono lekcji lub brak dostępu.")
+    if lekcja["status"] != "zaplanowana":
+        conn.close()
+        raise ValueError("Można odwołać tylko zaplanowaną lekcję.")
+
+    cursor.execute("UPDATE lekcje SET status = 'odwolana' WHERE id = ?", (lekcja_id,))
+    cursor.execute(
+        "UPDATE uczniowie SET pakiet_godzin = pakiet_godzin + ? WHERE id = ?",
+        (lekcja["czas_trwania"], uczen_id)
+    )
+    conn.commit()
+    conn.close()
