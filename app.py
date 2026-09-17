@@ -425,23 +425,23 @@ def pokaz_widok_ucznia():
 
     st.divider()
 
-    with st.expander("📅 Kalendarz moich lekcji"):
-        wydarzenia_ucznia = zbuduj_wydarzenia_kalendarza(
-            historia_cala, lambda l: ETYKIETY_STATUSOW_LEKCJI.get(l["status"], l["status"])
-        )
-        opcje_kalendarza_ucznia = {
-            "initialView": "dayGridMonth",
-            "locale": "pl",
-            "firstDay": 1,
-            "headerToolbar": {
-                "left": "prev,next today",
-                "center": "title",
-                "right": "dayGridMonth,timeGridWeek,timeGridDay",
-            },
-            "height": 550,
-        }
-        calendar(events=wydarzenia_ucznia, options=opcje_kalendarza_ucznia, key="kalendarz_ucznia")
-        st.caption("🔵 Zaplanowana &nbsp;&nbsp; 🟢 Odbyta &nbsp;&nbsp; 🔴 Odwołana", unsafe_allow_html=True)
+    st.subheader("📅 Kalendarz moich lekcji")
+    wydarzenia_ucznia = zbuduj_wydarzenia_kalendarza(
+        historia_cala, lambda l: ETYKIETY_STATUSOW_LEKCJI.get(l["status"], l["status"])
+    )
+    opcje_kalendarza_ucznia = {
+        "initialView": "dayGridMonth",
+        "locale": "pl",
+        "firstDay": 1,
+        "headerToolbar": {
+            "left": "prev,next today",
+            "center": "title",
+            "right": "dayGridMonth,timeGridWeek,timeGridDay",
+        },
+        "height": 550,
+    }
+    calendar(events=wydarzenia_ucznia, options=opcje_kalendarza_ucznia, key="kalendarz_ucznia")
+    st.caption("🔵 Zaplanowana &nbsp;&nbsp; 🟢 Odbyta &nbsp;&nbsp; 🔴 Odwołana", unsafe_allow_html=True)
 
     st.divider()
 
