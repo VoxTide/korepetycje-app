@@ -1,6 +1,8 @@
 """
 database.py
-Obsługa bazy danych SQLite dla systemu rezerwacji korepetycji.
+Obsługa bazy danych dla systemu rezerwacji korepetycji - lokalnie plik
+SQLite, a w chmurze (jeśli skonfigurowane) trwała baza Turso, patrz
+db_backend.py.
 
 Struktura:
 - uzytkownicy: konta korepetytorów (login, zahaszowane hasło)
@@ -12,15 +14,14 @@ import sqlite3
 import hashlib
 import secrets
 from datetime import datetime, timedelta
+import db_backend
 
 DB_NAME = "korepetycje.db"
 
 
 def get_connection():
-    """Zwraca połączenie z bazą danych."""
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Zwraca połączenie z bazą danych (Turso w chmurze, jeśli skonfigurowane w sekretach, inaczej lokalny plik)."""
+    return db_backend.polacz(DB_NAME)
 
 
 def init_db():
@@ -129,7 +130,7 @@ def _migruj_baze():
     try:
         cursor.execute("ALTER TABLE uczniowie ADD COLUMN notatki TEXT")
         conn.commit()
-    except sqlite3.OperationalError:
+    except Exception:
         pass  # kolumna już istnieje - nic do zrobienia
 
     for kolumna, typ in [
@@ -143,25 +144,25 @@ def _migruj_baze():
         try:
             cursor.execute(f"ALTER TABLE uzytkownicy ADD COLUMN {kolumna} {typ}")
             conn.commit()
-        except sqlite3.OperationalError:
+        except Exception:
             pass  # kolumna już istnieje - nic do zrobienia
 
     try:
         cursor.execute("ALTER TABLE uczniowie ADD COLUMN email TEXT")
         conn.commit()
-    except sqlite3.OperationalError:
+    except Exception:
         pass  # kolumna już istnieje - nic do zrobienia
 
     try:
         cursor.execute("ALTER TABLE uczniowie ADD COLUMN kod_zaproszenia TEXT")
         conn.commit()
-    except sqlite3.OperationalError:
+    except Exception:
         pass  # kolumna już istnieje - nic do zrobienia
 
     try:
         cursor.execute("ALTER TABLE lekcje ADD COLUMN notatka_ucznia TEXT")
         conn.commit()
-    except sqlite3.OperationalError:
+    except Exception:
         pass  # kolumna już istnieje - nic do zrobienia
 
     # Uczniowie dodani PRZED wprowadzeniem kont uczniowskich nie mają jeszcze
