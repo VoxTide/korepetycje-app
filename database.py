@@ -770,6 +770,21 @@ def update_student_lesson_note(lekcja_id, uczen_id, notatka_ucznia):
     conn.close()
 
 
+def delete_own_student_account(uczen_id):
+    """
+    Usuwa WYŁĄCZNIE login/hasło ucznia (wiersz w konta_uczniow) - nie rusza
+    jego rekordu w tabeli uczniowie ani historii lekcji, bo te dane należą
+    do korepetytora i muszą zostać. Po usunięciu logowania stary kod
+    zaproszenia znów staje się aktywny, więc uczeń (albo ktoś inny) może
+    ponownie założyć konto, jeśli zechce.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM konta_uczniow WHERE uczen_id = ?", (uczen_id,))
+    conn.commit()
+    conn.close()
+
+
 def cancel_lesson_by_student(lekcja_id, uczen_id):
     """
     Pozwala uczniowi odwołać SWOJĄ własną, zaplanowaną lekcję - bez znajomości

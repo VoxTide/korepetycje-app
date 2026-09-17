@@ -56,6 +56,41 @@ ETYKIETY_STATUSOW_LEKCJI = {
     "odwolana": "❌ Odwołana",
 }
 
+KOLORY_STATUSOW_LEKCJI = {
+    "zaplanowana": "#3b82f6",  # niebieski
+    "odbyta": "#22c55e",       # zielony
+    "odwolana": "#ef4444",     # czerwony
+}
+
+
+def zbuduj_wydarzenia_kalendarza(lekcje, tytul_func):
+    """
+    Buduje listę wydarzeń dla komponentu kalendarza z listy lekcji.
+    tytul_func(lekcja) zwraca tekst tytułu wydarzenia (różny dla widoku
+    korepetytora - imię ucznia, i widoku ucznia - np. sam status).
+    """
+    wydarzenia = []
+    for lekcja in lekcje:
+        try:
+            godzina_start = lekcja["godzina"]
+            godzina_h, godzina_m = map(int, godzina_start.split(":"))
+            czas_start = f"{lekcja['data']}T{godzina_start}:00"
+
+            minuty_calkowite = godzina_h * 60 + godzina_m + int(lekcja["czas_trwania"] * 60)
+            godzina_koniec = f"{(minuty_calkowite // 60) % 24:02d}:{minuty_calkowite % 60:02d}"
+            czas_koniec = f"{lekcja['data']}T{godzina_koniec}:00"
+
+            wydarzenia.append({
+                "id": str(lekcja["id"]),
+                "title": tytul_func(lekcja),
+                "start": czas_start,
+                "end": czas_koniec,
+                "color": KOLORY_STATUSOW_LEKCJI.get(lekcja["status"], "#6b7280"),
+            })
+        except (ValueError, KeyError):
+            continue  # pomiń lekcję z nieprawidłowym formatem daty/godziny
+    return wydarzenia
+
 
 def pokaz_kontrolki_lekcji(lekcja, korepetytor_id, klucz_prefix):
     """
@@ -304,6 +339,31 @@ def pokaz_widok_ucznia():
 
     st.sidebar.markdown('<div class="sidebar-app-title">📚 Korepetytor +</div>', unsafe_allow_html=True)
     with st.sidebar.expander(f"🎓 {profil['imie']}"):
+        if st.session_state.get("uczen_potwierdz_usun_konto", False):
+            st.warning(
+                "Usunięcie konta usuwa TYLKO Twój login i hasło - Twoje lekcje i dane "
+                "zostają u korepetytora. Będziesz mógł/mogła założyć konto ponownie tym "
+                "samym kodem zaproszenia, jeśli zechcesz."
+            )
+            col_tak, col_nie = st.columns(2)
+            with col_tak:
+                if st.button("Tak, usuń", key="uczen_usun_konto_tak"):
+                    db.delete_own_student_account(uczen_id)
+                    del st.session_state["uczen_konto_id"]
+                    del st.session_state["uczen_login"]
+                    del st.session_state["uczen_potwierdz_usun_konto"]
+                    st.rerun()
+            with col_nie:
+                if st.button("Anuluj", key="uczen_usun_konto_nie"):
+                    st.session_state["uczen_potwierdz_usun_konto"] = False
+                    st.rerun()
+        else:
+            if st.button("🗑️ Usuń moje konto", key="uczen_usun_konto"):
+                st.session_state["uczen_potwierdz_usun_konto"] = True
+                st.rerun()
+
+        st.divider()
+
         if st.button("Wyloguj się", key="wyloguj_uczen"):
             del st.session_state["uczen_konto_id"]
             del st.session_state["uczen_login"]
@@ -312,9 +372,20 @@ def pokaz_widok_ucznia():
     st.title(f"Cześć, {profil['imie']}! 👋")
     pokaz_zapamietany_komunikat()
 
-    col1, col2 = st.columns(2)
+    historia_cala = db.get_own_lesson_history(uczen_id)
+    odbyte = [l for l in historia_cala if l["status"] == "odbyta"]
+    odwolane = [l for l in historia_cala if l["status"] == "odwolana"]
+    godziny_odbyte = sum(l["czas_trwania"] for l in odbyte)
+
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Pozostałe godziny w pakiecie", f"{profil['pakiet_godzin']}h")
+        st.metric("Pozostałe godziny", f"{profil['pakiet_godzin']}h")
+    with col2:
+        st.metric("Odbyte lekcje", len(odbyte))
+    with col3:
+        st.metric("Godziny odbyte łącznie", f"{godziny_odbyte}h")
+    with col4:
+        st.metric("Odwołane lekcje", len(odwolane))
 
     lekcje_nadchodzace = db.get_own_upcoming_lessons(uczen_id)
 
@@ -354,18 +425,32 @@ def pokaz_widok_ucznia():
 
     st.divider()
 
+    with st.expander("📅 Kalendarz moich lekcji"):
+        wydarzenia_ucznia = zbuduj_wydarzenia_kalendarza(
+            historia_cala, lambda l: ETYKIETY_STATUSOW_LEKCJI.get(l["status"], l["status"])
+        )
+        opcje_kalendarza_ucznia = {
+            "initialView": "dayGridMonth",
+            "locale": "pl",
+            "firstDay": 1,
+            "headerToolbar": {
+                "left": "prev,next today",
+                "center": "title",
+                "right": "dayGridMonth,timeGridWeek,timeGridDay",
+            },
+            "height": 550,
+        }
+        calendar(events=wydarzenia_ucznia, options=opcje_kalendarza_ucznia, key="kalendarz_ucznia")
+        st.caption("🔵 Zaplanowana &nbsp;&nbsp; 🟢 Odbyta &nbsp;&nbsp; 🔴 Odwołana", unsafe_allow_html=True)
+
+    st.divider()
+
     with st.expander("📜 Historia lekcji"):
-        historia = db.get_own_lesson_history(uczen_id)
-        if not historia:
+        if not historia_cala:
             st.caption("Brak lekcji w historii.")
         else:
-            etykiety_statusow = {
-                "zaplanowana": "🕒 Zaplanowana",
-                "odbyta": "✅ Odbyta",
-                "odwolana": "❌ Odwołana"
-            }
-            for lekcja in historia:
-                etykieta = etykiety_statusow.get(lekcja["status"], lekcja["status"])
+            for lekcja in historia_cala:
+                etykieta = ETYKIETY_STATUSOW_LEKCJI.get(lekcja["status"], lekcja["status"])
                 st.caption(f"{lekcja['data']} {lekcja['godzina']} ({lekcja['czas_trwania']}h) — {etykieta}")
 
 
@@ -552,33 +637,9 @@ elif menu == "Kalendarz":
 
     lekcje = db.get_all_lessons(korepetytor_id)
 
-    kolory_statusow = {
-        "zaplanowana": "#3b82f6",  # niebieski
-        "odbyta": "#22c55e",       # zielony
-        "odwolana": "#ef4444",     # czerwony
-    }
-
-    wydarzenia = []
-    for lekcja in lekcje:
-        try:
-            godzina_start = lekcja["godzina"]
-            godzina_h, godzina_m = map(int, godzina_start.split(":"))
-            czas_start = f"{lekcja['data']}T{godzina_start}:00"
-
-            # Obliczamy godzinę końcową na podstawie czasu trwania
-            minuty_calkowite = godzina_h * 60 + godzina_m + int(lekcja["czas_trwania"] * 60)
-            godzina_koniec = f"{(minuty_calkowite // 60) % 24:02d}:{minuty_calkowite % 60:02d}"
-            czas_koniec = f"{lekcja['data']}T{godzina_koniec}:00"
-
-            wydarzenia.append({
-                "id": str(lekcja["id"]),
-                "title": f"{lekcja['imie']} {lekcja['nazwisko'] or ''}".strip(),
-                "start": czas_start,
-                "end": czas_koniec,
-                "color": kolory_statusow.get(lekcja["status"], "#6b7280"),
-            })
-        except (ValueError, KeyError):
-            continue  # pomiń lekcję z nieprawidłowym formatem daty/godziny
+    wydarzenia = zbuduj_wydarzenia_kalendarza(
+        lekcje, lambda l: f"{l['imie']} {l['nazwisko'] or ''}".strip()
+    )
 
     opcje_kalendarza = {
         "initialView": "dayGridMonth",
