@@ -26,7 +26,12 @@ def get_connection():
 
 def init_db():
     """Tworzy tabele, jeśli jeszcze nie istnieją. Wywołaj raz na start aplikacji."""
-    _napraw_przestarzala_tabele_uczniow()
+    if not db_backend.turso_skonfigurowane():
+        # Ta naprawa dotyczy WYŁĄCZNIE starych, lokalnych baz SQLite sprzed
+        # wprowadzenia kont użytkowników - nowa baza (w tym każda baza Turso)
+        # nigdy nie miała tego problemu, więc nie ma potrzeby (ani bezpiecznie)
+        # tego uruchamiać na danych w chmurze
+        _napraw_przestarzala_tabele_uczniow()
 
     conn = get_connection()
     cursor = conn.cursor()

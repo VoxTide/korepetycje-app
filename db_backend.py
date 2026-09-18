@@ -82,17 +82,16 @@ class _KursorLibsql:
 
 
 class _PolaczenieLibsql:
-    """Opakowuje klienta libsql, imitując interfejs połączenia sqlite3 (cursor/commit/close)."""
+    """
+    Opakowuje klienta libsql, imitując interfejs połączenia sqlite3
+    (cursor/commit/close). Sam klient jest tworzony RAZ i przechowywany
+    współdzielony (patrz _pobierz_wspolny_klient_turso) - żeby uniknąć
+    zakładania nowego połączenia sieciowego z Turso przy każdym pojedynczym
+    zapytaniu, co bardzo spowalniało działanie aplikacji.
+    """
 
     def __init__(self, url, token):
-        # Adres w formacie "libsql://..." używa domyślnie połączenia przez
-        # WebSocket, które nie zawsze działa poprawnie w środowiskach takich
-        # jak Streamlit Cloud (może być blokowane albo źle obsługiwane przez
-        # sieć hostingu). Zamieniamy na "https://" - ten sam serwer Turso,
-        # ale połączenie przez zwykłe HTTPS, dużo bardziej niezawodne.
-        if url.startswith("libsql://"):
-            url = "https://" + url[len("libsql://"):]
-        self._klient = libsql_client.create_client_sync(url=url, auth_token=token)
+        self._klient = _pobierz_wspolny_klient_turso(url, token)
 
     def cursor(self):
         return _KursorLibsql(self._klient)
@@ -101,7 +100,31 @@ class _PolaczenieLibsql:
         pass  # libsql_client zapisuje zmiany od razu przy każdym execute()
 
     def close(self):
-        self._klient.close()
+        pass  # połączenie jest współdzielone między wywołaniami - naprawdę
+              # zamykać będziemy je dopiero przy zamknięciu procesu aplikacji
+
+
+_wspolny_klient_turso = None
+
+
+def _pobierz_wspolny_klient_turso(url, token):
+    """
+    Zwraca jedno, długożyjące połączenie z Turso, tworzone tylko przy
+    pierwszym użyciu w danym procesie aplikacji, a potem używane ponownie
+    do wszystkich kolejnych zapytań (zamiast łączyć się od nowa za każdym
+    razem).
+    """
+    global _wspolny_klient_turso
+    if _wspolny_klient_turso is None:
+        # Adres w formacie "libsql://..." używa domyślnie połączenia przez
+        # WebSocket, które nie zawsze działa poprawnie w środowiskach takich
+        # jak Streamlit Cloud (może być blokowane albo źle obsługiwane przez
+        # sieć hostingu). Zamieniamy na "https://" - ten sam serwer Turso,
+        # ale połączenie przez zwykłe HTTPS, dużo bardziej niezawodne.
+        if url.startswith("libsql://"):
+            url = "https://" + url[len("libsql://"):]
+        _wspolny_klient_turso = libsql_client.create_client_sync(url=url, auth_token=token)
+    return _wspolny_klient_turso
 
 
 def polacz(nazwa_pliku_sqlite):
