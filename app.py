@@ -13,7 +13,21 @@ import re
 from streamlit_calendar import calendar
 import poczta
 
-db.init_db()
+
+@st.cache_resource
+def _inicjalizuj_baze_raz():
+    """
+    Uruchamia db.init_db() (sprawdzenie/utworzenie struktury tabel) tylko RAZ
+    na cały czas działania serwera, a nie przy każdym pojedynczym odświeżeniu
+    strony. Bez tego, przy bazie w chmurze (Turso), każda interakcja - nawet
+    samo wpisanie litery w polu logowania - kosztowałaby kilkanaście zbędnych
+    zapytań sieciowych sprawdzających strukturę tabel od nowa.
+    """
+    db.init_db()
+    return True
+
+
+_inicjalizuj_baze_raz()
 
 
 def rozpocznij_sesje_zapamietana(typ_konta, konto_id):
