@@ -387,6 +387,19 @@ def pokaz_widok_ucznia():
     with col4:
         st.metric("Odwołane lekcje", len(odwolane))
 
+    with st.expander("📞 Dane kontaktowe korepetytora"):
+        kontakt = db.get_tutor_contact_info_for_student(uczen_id)
+        if kontakt is None:
+            st.caption("Nie udało się pobrać danych kontaktowych.")
+        else:
+            st.write(f"**{kontakt['imie_wyswietlane'] or kontakt['login']}**")
+            if kontakt["telefon"]:
+                st.write(f"📱 {kontakt['telefon']}")
+            if kontakt["email"]:
+                st.write(f"✉️ {kontakt['email']}")
+            if not kontakt["telefon"] and not kontakt["email"]:
+                st.caption("Korepetytor nie udostępnił jeszcze danych kontaktowych.")
+
     lekcje_nadchodzace = db.get_own_upcoming_lessons(uczen_id)
 
     st.subheader("Nadchodzące lekcje")
@@ -477,6 +490,26 @@ korepetytor_id = st.session_state["user_id"]
 st.sidebar.markdown('<div class="sidebar-app-title">📚 Korepetytor +</div>', unsafe_allow_html=True)
 
 with st.sidebar.expander(f"👤 {st.session_state['login']}"):
+    st.markdown("**✏️ Moje dane kontaktowe (widoczne dla uczniów)**")
+    dane_kontaktowe = db.get_tutor_contact_info(korepetytor_id)
+    nowe_imie_wyswietlane = st.text_input(
+        "Imię i nazwisko", value=dane_kontaktowe["imie_wyswietlane"] or "", key="kontakt_imie"
+    )
+    nowy_telefon_kontakt = st.text_input(
+        "Telefon kontaktowy", value=dane_kontaktowe["telefon"] or "", key="kontakt_telefon"
+    )
+    nowy_email_kontakt = st.text_input(
+        "E-mail kontaktowy", value=dane_kontaktowe["email"] or "", key="kontakt_email"
+    )
+    if st.button("Zapisz dane kontaktowe", key="zapisz_kontakt"):
+        if not czy_poprawny_telefon(nowy_telefon_kontakt):
+            st.error("Numer telefonu wygląda niepoprawnie. Podaj 9 cyfr, opcjonalnie z prefiksem +48 (albo zostaw pole puste).")
+        else:
+            db.update_tutor_contact_info(korepetytor_id, nowe_imie_wyswietlane, nowy_telefon_kontakt, nowy_email_kontakt)
+            st.success("Zapisano dane kontaktowe.")
+
+    st.divider()
+
     # Usuwanie konta - z dwuetapowym potwierdzeniem, tak jak przy usuwaniu ucznia
     if st.session_state.get("potwierdz_usun_konto", False):
         st.warning("Usunięcie konta jest nieodwracalne — stracisz wszystkich uczniów i lekcje.")

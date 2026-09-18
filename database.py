@@ -140,6 +140,8 @@ def _migruj_baze():
         ("email", "TEXT"),
         ("reset_kod", "TEXT"),
         ("reset_wygasa", "TEXT"),
+        ("imie_wyswietlane", "TEXT"),
+        ("telefon", "TEXT"),
     ]:
         try:
             cursor.execute(f"ALTER TABLE uzytkownicy ADD COLUMN {kolumna} {typ}")
@@ -253,6 +255,46 @@ def get_user_email(login):
     row = cursor.fetchone()
     conn.close()
     return row["email"] if row else None
+
+
+def get_tutor_contact_info(korepetytor_id):
+    """Zwraca dane kontaktowe korepetytora (imię wyświetlane, telefon, e-mail, login) po jego id."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT login, email, imie_wyswietlane, telefon FROM uzytkownicy WHERE id = ?",
+        (korepetytor_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_tutor_contact_info_for_student(uczen_id):
+    """Zwraca dane kontaktowe korepetytora, do którego należy dany uczeń."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT uzytkownicy.login, uzytkownicy.email, uzytkownicy.imie_wyswietlane, uzytkownicy.telefon
+        FROM uczniowie
+        JOIN uzytkownicy ON uczniowie.korepetytor_id = uzytkownicy.id
+        WHERE uczniowie.id = ?
+    """, (uczen_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def update_tutor_contact_info(korepetytor_id, imie_wyswietlane, telefon, email):
+    """Aktualizuje dane kontaktowe korepetytora widoczne dla jego uczniów."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE uzytkownicy SET imie_wyswietlane = ?, telefon = ?, email = ? WHERE id = ?",
+        (imie_wyswietlane, telefon, email, korepetytor_id)
+    )
+    conn.commit()
+    conn.close()
 
 
 def wygeneruj_kod_resetu(login):
