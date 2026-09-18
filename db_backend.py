@@ -85,6 +85,13 @@ class _PolaczenieLibsql:
     """Opakowuje klienta libsql, imitując interfejs połączenia sqlite3 (cursor/commit/close)."""
 
     def __init__(self, url, token):
+        # Adres w formacie "libsql://..." używa domyślnie połączenia przez
+        # WebSocket, które nie zawsze działa poprawnie w środowiskach takich
+        # jak Streamlit Cloud (może być blokowane albo źle obsługiwane przez
+        # sieć hostingu). Zamieniamy na "https://" - ten sam serwer Turso,
+        # ale połączenie przez zwykłe HTTPS, dużo bardziej niezawodne.
+        if url.startswith("libsql://"):
+            url = "https://" + url[len("libsql://"):]
         self._klient = libsql_client.create_client_sync(url=url, auth_token=token)
 
     def cursor(self):
