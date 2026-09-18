@@ -84,6 +84,20 @@ def init_db():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS prosby_o_lekcje (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            uczen_id INTEGER NOT NULL,
+            data TEXT NOT NULL,
+            godzina TEXT NOT NULL,
+            czas_trwania REAL NOT NULL DEFAULT 1.0,
+            notatka TEXT,
+            status TEXT NOT NULL DEFAULT 'oczekujaca',
+            utworzono TEXT NOT NULL,
+            FOREIGN KEY (uczen_id) REFERENCES uczniowie (id)
+        )
+    """)
+
     conn.commit()
     conn.close()
     _migruj_baze()
@@ -851,5 +865,126 @@ def cancel_lesson_by_student(lekcja_id, uczen_id):
         "UPDATE uczniowie SET pakiet_godzin = pakiet_godzin + ? WHERE id = ?",
         (lekcja["czas_trwania"], uczen_id)
     )
+    conn.commit()
+    conn.close()
+
+
+# --- PROŚBY O LEKCJE (uczeń proponuje termin, korepetytor akceptuje/odrzuca) ---
+
+def create_lesson_request(uczen_id, data, godzina, czas_trwania=1.0, notatka=""):
+    """Uczeń zgłasza propozycję terminu lekcji - trafia do korepetytora jako oczekująca na decyzję."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """INSERT INTO prosby_o_lekcje (uczen_id, data, godzina, czas_trwania, notatka, status, utworzono)
+           VALUES (?, ?, ?, ?, ?, 'oczekujaca', ?)""",
+        (uczen_id, data, godzina, czas_trwania, notatka, datetime.now().isoformat())
+    )
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return new_id
+
+
+def get_own_lesson_requests(uczen_id):
+    """Zwraca wszystkie prośby o lekcje danego ucznia (każdy status), od najnowszej."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM prosby_o_lekcje WHERE uczen_id = ? ORDER BY utworzono DESC",
+        (uczen_id,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def withdraw_lesson_request(prosba_id, uczen_id):
+    """Pozwala uczniowi wycofać SWOJĄ prośbę, dopóki korepetytor jej nie rozpatrzył."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT status FROM prosby_o_lekcje WHERE id = ? AND uczen_id = ?", (prosba_id, uczen_id))
+    row = cursor.fetchone()
+
+    if row is None:
+        conn.close()
+        raise ValueError("Nie znaleziono prośby lub brak dostępu.")
+    if row["status"] != "oczekujaca":
+        conn.close()
+        raise ValueError("Można wycofać tylko prośbę, która czeka jeszcze na decyzję.")
+
+    cursor.execute("UPDATE prosby_o_lekcje SET status = 'wycofana' WHERE id = ?", (prosba_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_pending_requests_for_tutor(korepetytor_id):
+    """Zwraca oczekujące prośby o lekcje wyłącznie od uczniów danego korepetytora."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT prosby_o_lekcje.*, uczniowie.imie, uczniowie.nazwisko
+        FROM prosby_o_lekcje
+        JOIN uczniowie ON prosby_o_lekcje.uczen_id = uczniowie.id
+        WHERE uczniowie.korepetytor_id = ? AND prosby_o_lekcje.status = 'oczekujaca'
+        ORDER BY prosby_o_lekcje.data ASC, prosby_o_lekcje.godzina ASC
+    """, (korepetytor_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def _get_request_with_owner_check(prosba_id, korepetytor_id):
+    """Zwraca prośbę tylko jeśli uczeń, który ją zgłosił, należy do tego korepetytora."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT prosby_o_lekcje.* FROM prosby_o_lekcje
+        JOIN uczniowie ON prosby_o_lekcje.uczen_id = uczniowie.id
+        WHERE prosby_o_lekcje.id = ? AND uczniowie.korepetytor_id = ?
+    """, (prosba_id, korepetytor_id))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def approve_lesson_request(prosba_id, korepetytor_id):
+    """
+    Akceptuje prośbę: tworzy z niej prawdziwą lekcję (przez add_lesson - więc
+    normalnie odejmuje godziny z pakietu ucznia) i oznacza prośbę jako zaakceptowaną.
+    """
+    prosba = _get_request_with_owner_check(prosba_id, korepetytor_id)
+    if prosba is None:
+        raise ValueError("Nie znaleziono prośby lub brak dostępu.")
+    if prosba["status"] != "oczekujaca":
+        raise ValueError("Ta prośba została już rozpatrzona.")
+
+    add_lesson(
+        uczen_id=prosba["uczen_id"],
+        korepetytor_id=korepetytor_id,
+        data=prosba["data"],
+        godzina=prosba["godzina"],
+        czas_trwania=prosba["czas_trwania"],
+        notatka=prosba["notatka"] or ""
+    )
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE prosby_o_lekcje SET status = 'zaakceptowana' WHERE id = ?", (prosba_id,))
+    conn.commit()
+    conn.close()
+
+
+def reject_lesson_request(prosba_id, korepetytor_id):
+    """Odrzuca prośbę - nie tworzy żadnej lekcji, tylko zmienia jej status."""
+    prosba = _get_request_with_owner_check(prosba_id, korepetytor_id)
+    if prosba is None:
+        raise ValueError("Nie znaleziono prośby lub brak dostępu.")
+    if prosba["status"] != "oczekujaca":
+        raise ValueError("Ta prośba została już rozpatrzona.")
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE prosby_o_lekcje SET status = 'odrzucona' WHERE id = ?", (prosba_id,))
     conn.commit()
     conn.close()

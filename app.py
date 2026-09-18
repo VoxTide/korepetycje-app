@@ -400,6 +400,49 @@ def pokaz_widok_ucznia():
             if not kontakt["telefon"] and not kontakt["email"]:
                 st.caption("Korepetytor nie udostępnił jeszcze danych kontaktowych.")
 
+    st.subheader("📩 Poproś o nową lekcję")
+    with st.expander("Zaproponuj termin"):
+        prosba_data = st.date_input("Proponowana data", value=date.today(), key="prosba_data")
+        prosba_godzina = st.time_input("Proponowana godzina", value=time(16, 0), key="prosba_godzina")
+        prosba_czas_trwania = st.number_input(
+            "Czas trwania (h)", value=1.0, step=0.5, min_value=0.5, key="prosba_czas"
+        )
+        prosba_notatka = st.text_input("Wiadomość do korepetytora (opcjonalnie)", key="prosba_notatka")
+
+        if st.button("Wyślij prośbę", key="wyslij_prosbe"):
+            db.create_lesson_request(
+                uczen_id,
+                prosba_data.isoformat(),
+                prosba_godzina.strftime("%H:%M"),
+                prosba_czas_trwania,
+                prosba_notatka
+            )
+            zapamietaj_komunikat("success", "Prośba wysłana! Poczekaj na decyzję korepetytora.")
+            st.rerun()
+
+    wlasne_prosby = db.get_own_lesson_requests(uczen_id)
+    oczekujace_prosby = [p for p in wlasne_prosby if p["status"] == "oczekujaca"]
+    if oczekujace_prosby:
+        st.caption("**Twoje oczekujące prośby:**")
+        ETYKIETY_STATUSOW_PROSBY = {
+            "oczekujaca": "🕒 Oczekuje na decyzję",
+            "zaakceptowana": "✅ Zaakceptowana",
+            "odrzucona": "❌ Odrzucona",
+            "wycofana": "↩️ Wycofana",
+        }
+        for prosba in oczekujace_prosby:
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.write(f"{prosba['data']} o {prosba['godzina']} ({prosba['czas_trwania']}h)")
+                st.caption(ETYKIETY_STATUSOW_PROSBY[prosba["status"]])
+            with col2:
+                if st.button("Wycofaj", key=f"wycofaj_prosbe_{prosba['id']}"):
+                    db.withdraw_lesson_request(prosba["id"], uczen_id)
+                    zapamietaj_komunikat("success", "Prośba wycofana.")
+                    st.rerun()
+
+    st.divider()
+
     lekcje_nadchodzace = db.get_own_upcoming_lessons(uczen_id)
 
     st.subheader("Nadchodzące lekcje")
@@ -572,6 +615,27 @@ if menu == "Podsumowanie":
         st.metric("Lekcje jutro", len(lekcje_jutro))
     with col3:
         st.metric("Liczba uczniów", len(uczniowie))
+
+    prosby_oczekujace = db.get_pending_requests_for_tutor(korepetytor_id)
+    if prosby_oczekujace:
+        st.divider()
+        st.subheader(f"📩 Prośby o lekcje ({len(prosby_oczekujace)})")
+        for prosba in prosby_oczekujace:
+            col1, col2, col3 = st.columns([3, 1, 1])
+            with col1:
+                st.write(f"**{prosba['imie']} {prosba['nazwisko'] or ''}** — {prosba['data']} o {prosba['godzina']} ({prosba['czas_trwania']}h)")
+                if prosba["notatka"]:
+                    st.caption(f"Wiadomość: {prosba['notatka']}")
+            with col2:
+                if st.button("✅ Akceptuj", key=f"akceptuj_prosbe_{prosba['id']}"):
+                    db.approve_lesson_request(prosba["id"], korepetytor_id)
+                    zapamietaj_komunikat("success", "Prośba zaakceptowana - lekcja dodana do kalendarza.")
+                    st.rerun()
+            with col3:
+                if st.button("❌ Odrzuć", key=f"odrzuc_prosbe_{prosba['id']}"):
+                    db.reject_lesson_request(prosba["id"], korepetytor_id)
+                    zapamietaj_komunikat("success", "Prośba odrzucona.")
+                    st.rerun()
 
     st.divider()
 
