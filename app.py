@@ -16,6 +16,25 @@ import poczta
 db.init_db()
 
 
+def rozpocznij_sesje_zapamietana(typ_konta, konto_id):
+    """
+    Tworzy trwały token sesji i zapisuje go w adresie URL strony, żeby
+    zalogowanie przetrwało zwykłe odświeżenie przeglądarki (F5) - inaczej
+    session_state samo w sobie tego nie przetrwa.
+    """
+    token = db.create_session(typ_konta, konto_id)
+    st.query_params["sesja"] = token
+
+
+def zakoncz_sesje_zapamietana():
+    """Usuwa trwały token sesji z bazy i z adresu URL (przy wylogowaniu/usunięciu konta)."""
+    token = st.query_params.get("sesja")
+    if token:
+        db.delete_session(token)
+    if "sesja" in st.query_params:
+        del st.query_params["sesja"]
+
+
 def czy_poprawny_telefon(telefon):
     """
     Sprawdza, czy numer telefonu wygląda poprawnie.
@@ -212,6 +231,7 @@ def pokaz_ekran_logowania():
                 else:
                     st.session_state["user_id"] = user_id
                     st.session_state["login"] = login
+                    rozpocznij_sesje_zapamietana("korepetytor", user_id)
                     st.rerun()
 
     with tab_rejestracja:
@@ -297,6 +317,7 @@ def pokaz_ekran_logowania_ucznia():
                 else:
                     st.session_state["uczen_konto_id"] = uczen_id
                     st.session_state["uczen_login"] = login
+                    rozpocznij_sesje_zapamietana("uczen", uczen_id)
                     st.rerun()
 
     with tab_rejestracja:
@@ -332,6 +353,7 @@ def pokaz_widok_ucznia():
     if profil is None:
         st.error("Nie znaleziono Twojego profilu - skontaktuj się z korepetytorem.")
         if st.button("Wyloguj się"):
+            zakoncz_sesje_zapamietana()
             del st.session_state["uczen_konto_id"]
             del st.session_state["uczen_login"]
             st.rerun()
@@ -349,6 +371,7 @@ def pokaz_widok_ucznia():
             with col_tak:
                 if st.button("Tak, usuń", key="uczen_usun_konto_tak"):
                     db.delete_own_student_account(uczen_id)
+                    zakoncz_sesje_zapamietana()
                     del st.session_state["uczen_konto_id"]
                     del st.session_state["uczen_login"]
                     del st.session_state["uczen_potwierdz_usun_konto"]
@@ -365,6 +388,7 @@ def pokaz_widok_ucznia():
         st.divider()
 
         if st.button("Wyloguj się", key="wyloguj_uczen"):
+            zakoncz_sesje_zapamietana()
             del st.session_state["uczen_konto_id"]
             del st.session_state["uczen_login"]
             st.rerun()
@@ -510,6 +534,27 @@ def pokaz_widok_ucznia():
                 st.caption(f"{lekcja['data']} {lekcja['godzina']} ({lekcja['czas_trwania']}h) — {etykieta}")
 
 
+# --- AUTOMATYCZNE LOGOWANIE Z ZAPISANEJ SESJI (przetrwanie odświeżenia strony) ---
+
+if "user_id" not in st.session_state and "uczen_konto_id" not in st.session_state:
+    token_sesji = st.query_params.get("sesja")
+    if token_sesji:
+        sesja = db.get_session(token_sesji)
+        if sesja is None:
+            # token nieprawidłowy albo wygasł - usuwamy go z adresu URL
+            if "sesja" in st.query_params:
+                del st.query_params["sesja"]
+        elif sesja["typ_konta"] == "korepetytor":
+            login_z_bazy = db.get_login_by_id(sesja["konto_id"])
+            if login_z_bazy:
+                st.session_state["user_id"] = sesja["konto_id"]
+                st.session_state["login"] = login_z_bazy
+        else:
+            login_ucznia = db.get_student_login(sesja["konto_id"])
+            if login_ucznia:
+                st.session_state["uczen_konto_id"] = sesja["konto_id"]
+                st.session_state["uczen_login"] = login_ucznia
+
 # --- SPRAWDZENIE, CZY UŻYTKOWNIK JEST ZALOGOWANY ---
 
 if "user_id" not in st.session_state and "uczen_konto_id" not in st.session_state:
@@ -560,6 +605,7 @@ with st.sidebar.expander(f"👤 {st.session_state['login']}"):
         with col_tak:
             if st.button("Tak, usuń", key="usun_konto_tak"):
                 db.delete_user(korepetytor_id)
+                zakoncz_sesje_zapamietana()
                 del st.session_state["user_id"]
                 del st.session_state["login"]
                 del st.session_state["potwierdz_usun_konto"]
@@ -576,6 +622,7 @@ with st.sidebar.expander(f"👤 {st.session_state['login']}"):
     st.divider()
 
     if st.button("Wyloguj się"):
+        zakoncz_sesje_zapamietana()
         del st.session_state["user_id"]
         del st.session_state["login"]
         st.rerun()

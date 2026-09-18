@@ -98,6 +98,17 @@ def init_db():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sesje (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token TEXT NOT NULL UNIQUE,
+            typ_konta TEXT NOT NULL,
+            konto_id INTEGER NOT NULL,
+            utworzono TEXT NOT NULL,
+            wygasa TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
     conn.close()
     _migruj_baze()
@@ -988,3 +999,78 @@ def reject_lesson_request(prosba_id, korepetytor_id):
     cursor.execute("UPDATE prosby_o_lekcje SET status = 'odrzucona' WHERE id = ?", (prosba_id,))
     conn.commit()
     conn.close()
+
+
+# --- TRWAŁE SESJE LOGOWANIA (przetrwanie odświeżenia strony) ---
+
+def create_session(typ_konta, konto_id, dni_waznosci=30):
+    """
+    Tworzy trwały token sesji (dla korepetytora albo ucznia) i zapisuje go
+    w bazie z datą wygaśnięcia. Token trafia potem do adresu URL strony,
+    dzięki czemu logowanie przetrwa zwykłe odświeżenie przeglądarki (F5) -
+    session_state samo w sobie tego nie przetrwa, bo każde odświeżenie
+    zaczyna nową sesję po stronie serwera Streamlit.
+    """
+    token = secrets.token_urlsafe(32)
+    wygasa = (datetime.now() + timedelta(days=dni_waznosci)).isoformat()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO sesje (token, typ_konta, konto_id, utworzono, wygasa) VALUES (?, ?, ?, ?, ?)",
+        (token, typ_konta, konto_id, datetime.now().isoformat(), wygasa)
+    )
+    conn.commit()
+    conn.close()
+    return token
+
+
+def get_session(token):
+    """
+    Sprawdza token sesji. Zwraca {"typ_konta": ..., "konto_id": ...} jeśli
+    token jest prawidłowy i nieprzeterminowany, w przeciwnym razie None.
+    """
+    if not token:
+        return None
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT typ_konta, konto_id, wygasa FROM sesje WHERE token = ?", (token,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None:
+        return None
+    if datetime.now() > datetime.fromisoformat(row["wygasa"]):
+        return None
+    return {"typ_konta": row["typ_konta"], "konto_id": row["konto_id"]}
+
+
+def delete_session(token):
+    """Usuwa token sesji z bazy (przy wylogowaniu albo usunięciu konta)."""
+    if not token:
+        return
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM sesje WHERE token = ?", (token,))
+    conn.commit()
+    conn.close()
+
+
+def get_login_by_id(korepetytor_id):
+    """Zwraca login korepetytora po jego id - potrzebne przy automatycznym logowaniu z zapisanej sesji."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT login FROM uzytkownicy WHERE id = ?", (korepetytor_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row["login"] if row else None
+
+
+def get_student_login(uczen_id):
+    """Zwraca login konta ucznia po jego uczen_id - potrzebne przy automatycznym logowaniu z zapisanej sesji."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT login FROM konta_uczniow WHERE uczen_id = ?", (uczen_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row["login"] if row else None
